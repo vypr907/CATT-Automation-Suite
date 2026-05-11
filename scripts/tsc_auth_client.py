@@ -7,13 +7,13 @@ from typing import Any, Dict, Optional
 
 """
 .SYNOPSIS
-    catt_extract_tsc.py
+    tsc_auth_client.py
     Windows-native Tenable SC client using CAC/PIV certificates.
 
 .DESCRIPTION
+    Updated for the CATT-Automation-Suite. This script manages mTLS communication by orchestrating PowerShell helpers in the /auth directory.
     This script provides a class to interact with Tenable SC using CAC/PIV certificates.
-    It launches a PowerShell script to let the user pick the correct CAC certificate,
-    then uses it for mTLS requests.
+    It launches a PowerShell script to let the user pick the correct CAC certificate, then uses it for mTLS requests.
 
 .NOTES
     Author: Steven "vypr" Laszloffy
@@ -30,7 +30,7 @@ class TSCWindowsCAC:
     - Safe: private keys are never exported, only metadata is saved.
     """
 
-    def __init__(self, base_url: str, ps_picker: str, api_script: str, ca_bundle: Optional[str] = None, force_repick: bool = False):
+    def __init__(self, base_url: str, force_repick: bool = False):
         """
         Initialize the TSC client using CAC cert.
 
@@ -41,10 +41,11 @@ class TSCWindowsCAC:
         :param force_repick: If True, always prompt for cert selection
         """
         self.base_url = base_url.rstrip("/")
-        self.ps_picker = ps_picker
-        self.api_script = api_script
-        self.ca_bundle = ca_bundle # not used in this version, but can be passed for custom CA bundles
-        #self.session = self._create_session()
+
+        # Unified folder paths
+        self.auth_dir = "auth"
+        self.ps_picker = os.path.join(self.auth_dir, "cac_picker.ps1")
+        self.api_script = os.path.join(self.auth_dir, "tsc_api_helper.ps1")
         
         # Paths for exporting the selected cert info
         self.cert_info_path = os.path.join(os.environ["TEMP"], "cac_cert_info.json")
@@ -76,44 +77,40 @@ class TSCWindowsCAC:
 
     def _pick_cert(self) -> Dict[str, Any]:
         """
-        Internal: launch PowerShell script to pick the CAC cert and load exported JSON.
-        Only runs the picker script if cert_info_path does not exist.
+        Internal: Launches the PowerShell UI (cac_picker.ps1) to select a CAC.
+        Reads the resulting JSON, validates the data, and returns the metadata.
         """
-        if os.path.exists(self.cert_info_path):
-            # Cert already picked, just load it. 
-            # Read JSON using utf-8-sig to handle BOM if present
-            try:
-                with open(self.cert_info_path, "r", encoding="utf-8-sig") as f:
-                    cert_info = json.load(f)
-            except json.JSONDecodeError as e:
-                raise ValueError(f"Error decoding JSON from {self.cert_info_path}: {e}")
-        else:
-            # Picker script not run yet, run it now
+        # 1. Check if the picker needs to run
+        if not os.path.exists(self.cert_info_path):
             print("[*] Launching CAC cert picker...")
             if not os.path.exists(self.ps_picker):
-                raise FileNotFoundError(f"Certificate picker script not found: {self.ps_picker}")
+                raise FileNotFoundError(f"Missing critical component: {self.ps_picker}")
+        
             try:
+                # Run the merged picker script
                 subprocess.run([
-                    "powershell",
-                    "-NoProfile",
-                    "-ExecutionPolicy", "Bypass",
-                    "-File", self.ps_picker,
-                    "-ExportPath", self.cert_info_path
+                    "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                    "-File", self.ps_picker, "-ExportPath", self.cert_info_path
                 ], check=True)
             except subprocess.CalledProcessError as e:
-                raise RuntimeError(f"Error running certificate picker script: {e}")
-            if not os.path.exists(self.cert_info_path):
-                raise FileNotFoundError(f"Certificate info file not found: {self.cert_info_path}")
-            try:
-                with open(self.cert_info_path, "r", encoding="utf-8-sig") as f:
-                    cert_info = json.load(f)
-            except json.JSONDecodeError as e:
-                raise ValueError(f"Error decoding JSON from {self.cert_info_path}: {e}")
+                raise RuntimeError(f"Certificate selection failed: {e}")
 
+        # 2. Load the data into a temporary variable (cert_info)
+        # We use utf-8-sig to handle Windows/PowerShell Byte Order Marks
+        try:
+            with open(self.cert_info_path, "r", encoding="utf-8-sig") as f:
+                cert_info = json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Error decoding JSON from {self.cert_info_path}: {e}")
+
+        # 3. Security Validation: Ensure the PowerShell script gave us what we need
+        # This prevents the script from crashing later when it tries to find the thumbprint
         required_keys = {"Thumbprint", "Subject", "Issuer", "NotBefore", "NotAfter", "EKUs"}
         if not required_keys.issubset(cert_info.keys()):
-            raise ValueError(f"Certificate info missing required keys: {required_keys - cert_info.keys()}")
+            missing = required_keys - cert_info.keys()
+            raise ValueError(f"Certificate info missing required keys: {missing}")
 
+        # 4. Final Return: Now that data is verified, we hand it back to the class
         return cert_info
     
     # --------------------- Requests Session ---------------------
@@ -179,76 +176,31 @@ class TSCWindowsCAC:
         Internal: Use previously selected cert with mTLS using selected cert.
         """
         
-        # Build args and print all request details for debugging
-        debug_info = {
-            "path": path,
-            "method": method,
-            "body": body,
-            "query": query,
-            "headers": headers,
-            "ignore_ssl_errors": ignore_ssl_errors,
-            "ca_bundle": self.ca_bundle,
-            "thumbprint": self.thumbprint,
-            "api_script": self.api_script
-        }
-        print("[DEBUG] Request parameters:")
-        for k, v in debug_info.items():
-            print(f"  {k}: {v}")
-
-        if body is not None:
-            body_json = json.dumps(body)
-        else:
-            body_json = None
-
-        if query:
-            query_str = "&".join(f"{k}={v}" for k, v in query.items())
-            path_with_query = f"{path}?{query_str}"
-        else:
-            path_with_query = path
-
+        # Build the PowerShell command
         args = [
-            "powershell", 
-            "-NoProfile", 
-            "-ExecutionPolicy", "Bypass",
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-File", self.api_script,
             "-BaseUrl", self.base_url,
-            "-Path", path_with_query,
+            "-Path", path,
             "-Method", method,
             "-Thumbprint", self.thumbprint
         ]
 
-        if headers:
-            args += ["-HeadersJson", json.dumps(headers)]
-        if ignore_ssl_errors:
-            args += ["-IgnoreSslErrors"]
-        if self.ca_bundle:
-            args += ["-CaBundlePath", self.ca_bundle]
-        if body_json:
-            args += ["-BodyJson", body_json]
+        # Add optional JSON payloads if they exist
+        if headers: args += ["-HeadersJson", json.dumps(headers)]
+        if body:    args += ["-BodyJson", json.dumps(body)]
+        if query:   args += ["-QueryJson", json.dumps(query)]
 
-        print("[DEBUG] PowerShell command arguments:")
-        for arg in args:
-            print(f"  {arg}")
-
+        # Execute the request through the PowerShell bridge
         proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        print("[DEBUG] STDOUT:\n", proc.stdout)
-        print("[DEBUG] STDERR:\n", proc.stderr)
+        
         if proc.returncode != 0:
-            print("[ERROR] PowerShell call failed.")
-            print(f"[ERROR] Return code: {proc.returncode}")
-            print(f"[ERROR] STDERR: {proc.stderr}")
-            print(f"[ERROR] STDOUT: {proc.stdout}")
-            raise RuntimeError(f"PowerShell call failed (rc={proc.returncode}).\nSTDERR:\n{proc.stderr}\nSTDOUT:\n{proc.stdout}")
+            raise RuntimeError(f"API Call Failed: {proc.stderr}")
 
-        out = proc.stdout.strip()
-        if not out:
-            return None
         try:
-            return json.loads(out)
+            return json.loads(proc.stdout)
         except json.JSONDecodeError:
-            print("[ERROR] Failed to parse JSON from PowerShell output.")
-            print(f"[ERROR] Output: {out}")
-            return out
+            return proc.stdout.strip()
 
     # ------------------ Convenience methods ------------------
 
