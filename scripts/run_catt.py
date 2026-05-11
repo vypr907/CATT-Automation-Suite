@@ -1,8 +1,8 @@
 import argparse
 import time
-from nessus_tools import Logger
-from nessus_tools import NessusWorkflow
-from nessus_tools import pick_folders_gui
+from scripts.catt_engine import Logger
+from scripts.catt_engine import NessusWorkflow
+from scripts.catt_engine import pick_folders_gui
 from pathlib import Path
 
 def main():
