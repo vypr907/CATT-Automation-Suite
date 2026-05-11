@@ -1,0 +1,12 @@
+# Ignore resultant Excel/log files
+*.xlsx
+*.txt
+
+# Ignore .env files
+.env
+
+# Ignore .vscode directory
+.vscode/
+FINDINGS/
+SCANS/
+__pycache__/
