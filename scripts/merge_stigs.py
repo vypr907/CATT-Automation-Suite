@@ -1,152 +1,142 @@
 #!/usr/bin/env python3
 """
-STIG Deviation Merge Engine
-Description: Safely merges incoming Tenable compliance scan data (CATT Extracted Data)
-             into the master DISA STIG Deviation Spreadsheet using a composite key matching scheme.
-             Preserves human analysis and generates an audit-ready Change Log.
+STIG Deviation Merge Engine (Flexible Formats)
+Description: Dynamically handles .xlsx, .csv, and accommodates Google Sheets.
+             Prompts the user to pick their source files directly at runtime.
 """
 
 import os
 from datetime import datetime
 from pathlib import Path
 import pandas as pd
-
+import tkinter as tk
+from tkinter import filedialog, simpledialog
 
 # ==============================================================================
 # CONFIGURATION & COLUMN MAPPING
 # ==============================================================================
-# Stable matching key configuration
 MATCH_KEYS = ["IP Address", "Host Name"]
-
-# Map incoming machine-data columns to your master tracker's column schema
-COLUMN_MAP = {
-    "IP Address": "IP Address",
-    "Host Name": "Host Name",
-    "Host is Internal or Public-Facing": "Host is Internal or Public-Facing ",
-    "Host Type": "Host Type  ",
-    "Software Name": "Software Name ",
-    "Specify Benchmark followed": "Specify Benchmark followed ",
-    "Benchmark Exceptions List": "Benchmark Exceptions List ",
-    "Justifications for Exemptions": "Justifications for Exemptions",
-    "Mitigating Controls": "Mitigating Controls ",
-    "Compensating Controls": "Compensating Controls "
-}
-
-# Fields managed exclusively by human analysts that MUST be preserved
 MANUAL_FIELDS = [
     "Justifications for Exemptions",
     "Mitigating Controls ",
     "Compensating Controls "
 ]
 
-
-def load_and_normalize_csv(file_path: Path) -> pd.DataFrame:
-    """Loads a CSV file and strips whitespace from headers and string values."""
+def load_any_source(file_target) -> pd.DataFrame:
+    """
+    Dynamically ingests data based on source type (.csv, .xlsx, or Google Sheets URL).
+    """
+    # Case 1: Handle Google Sheets URL/ID string
+    if isinstance(file_target, str) and ("docs.google.com/spreadsheets" in file_target or file_target.startswith("gdoc:")):
+        print(f"[*] Authenticating with Google Sheets API to pull cloud data...")
+        return load_from_google_sheets(file_target)
+    
+    # Ensure we are working with a Path object for local files
+    file_path = Path(file_target)
     if not file_path.exists():
-        raise FileNotFoundError(f"Required file not found: {file_path}")
+        raise FileNotFoundError(f"Target file not found: {file_path}")
     
-    # Read CSV, ensuring all IPs/IDs are kept cleanly as strings to avoid truncation
-    df = pd.read_csv(file_path, dtype=str)
+    ext = file_path.suffix.lower()
+    
+    # Case 2: Handle Local CSV
+    if ext == ".csv":
+        print(f"[+] Parsing local CSV file: {file_path.name}")
+        df = pd.read_csv(file_path, dtype=str)
+    
+    # Case 3: Handle Local Excel Workbook
+    elif ext in [".xlsx", ".xlsm"]:
+        print(f"[+] Parsing local Excel Workbook: {file_path.name}")
+        # Automatically loads the first visible sheet; specify sheet_name if needed
+        df = pd.read_excel(file_path, dtype=str, sheet_name=0)
+        
+    else:
+        raise ValueError(f"Unsupported file extension format: {ext}")
+    
+    # Normalize headers and whitespace blocks
     df.columns = df.columns.str.strip()
-    
-    # Clean up string values inside cells
     for col in df.select_dtypes(include=["object"]).columns:
         df[col] = df[col].str.strip()
         
     return df
 
 
+def load_from_google_sheets(spreadsheet_identifier: str) -> pd.DataFrame:
+    """
+    Placeholder for Google Sheets API integration using gspread.
+    """
+    # To use this block, run: pip install gspread oauth2client
+    try:
+        import gspread
+        from oauth2client.service_account import ServiceAccountCredentials
+        
+        # Example least-privilege service account setup:
+        # scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        # creds = ServiceAccountCredentials.from_json_keyfile_name("service_account_creds.json", scope)
+        # client = gspread.authorize(creds)
+        # sheet = client.open_by_url(spreadsheet_identifier).sheet1
+        # return pd.DataFrame(sheet.get_all_records())
+        
+        raise NotImplementedError("Google Sheets credentials must be explicitly configured in the script.")
+        
+    except ImportError:
+        print("[-] Missing dependencies for Google cloud synchronization. Please run `pip install gspread`.")
+        raise
+
+
 def generate_composite_key(df: pd.DataFrame, keys: list) -> pd.Series:
-    """Generates a unique matching hash key from composite tracking fields."""
     return df[keys].astype(str).agg("-".join, axis=1)
 
 
-def merge_deviation_sheets(master_path: Path, incoming_scan_path: Path, output_path: Path):
-    """Executes the core merge pipeline logic preserving human analysis."""
-    print(f"[*] Starting STIG pipeline processing algorithm at {datetime.now()}")
+def merge_deviation_sheets(master_source, incoming_source, output_dir: Path):
+    """Core merge engine pipeline handling mixed data formats."""
+    print(f"\n[*] Starting STIG pipeline processing algorithm at {datetime.now()}")
     
-    # 1. Ingest datasets
-    master_df = load_and_normalize_csv(master_path)
-    incoming_df = load_and_normalize_csv(incoming_scan_path)
+    # 1. Ingest mixed-format datasets
+    master_df = load_any_source(master_source)
+    incoming_df = load_any_source(incoming_source)
     
     print(f"[+] Loaded Master Tracker: {len(master_df)} rows.")
     print(f"[+] Loaded Incoming Scan Data: {len(incoming_df)} rows.")
     
-    # 2. Establish lookup keys
+    # 2. Key Generation & Processing
     master_df["_merge_key"] = generate_composite_key(master_df, MATCH_KEYS)
     incoming_df["_merge_key"] = generate_composite_key(incoming_df, MATCH_KEYS)
     
-    # Detect duplicates in latest scan profiles
-    scan_duplicates = incoming_df[incoming_df.duplicated(subset=["_merge_key"])]
-    if not scan_duplicates.empty:
-        print(f"[!] Warning: {len(scan_duplicates)} duplicate keys detected in the incoming scan file.")
-    
-    # 3. Separate Human Data from Machine Data
-    # Isolate existing manual comments to map back later
     manual_data_lookup = master_df[["_merge_key"] + MANUAL_FIELDS].set_index("_merge_key")
+    incoming_clean = incoming_df.drop(columns=[col for col in MANUAL_FIELDS if col in incoming_df.columns], errors='ignore')
     
-    # Drop columns from incoming scan data that will be populated via manual preservation
-    incoming_clean = incoming_df.drop(columns=[col for col in MANUAL_FIELDS if col in incoming_df.columns])
-    
-    # 4. Process matches, updates, and additions
     new_findings = []
     updated_rows = []
     unchanged_count = 0
-    
-    # Create arrays for tracking audit updates
     master_keys = set(master_df["_merge_key"])
     
     for _, scan_row in incoming_clean.iterrows():
         key = scan_row["_merge_key"]
-        
         if key in master_keys:
-            # Existing host asset: Carry over existing human justifications safely
             merged_row = scan_row.to_dict()
             for field in MANUAL_FIELDS:
-                merged_row[field] = manual_data_lookup.loc[key, field]
+                # Safely fallback to blank string if field doesn't exist in lookup index
+                merged_row[field] = manual_data_lookup.loc[key, field] if key in manual_data_lookup.index else ""
             updated_rows.append(merged_row)
             unchanged_count += 1
         else:
-            # New host asset discovered in recent scans: Drop into review queue
             merged_row = scan_row.to_dict()
             for field in MANUAL_FIELDS:
                 merged_row[field] = "PENDING INITIAL ISSO REVIEW"
             new_findings.append(merged_row)
             
-    # Combine everything back into a uniform frame
     final_merged_df = pd.DataFrame(updated_rows + new_findings)
-    
-    # Clean up internal technical tooling columns
     if "_merge_key" in final_merged_df.columns:
         final_merged_df = final_merged_df.drop(columns=["_merge_key"])
         
-    # 5. Compile automated audit Change Log metrics
-    log_data = {
-        "Metric": [
-            "Execution Timestamp",
-            "Source Deviation Sheet",
-            "Source New Scan Ingest",
-            "Pre-existing Hosts Verified",
-            "New Systems Discovered (Review Queue)",
-            "Total Consolidated Database Count"
-        ],
-        "Value": [
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            master_path.name,
-            incoming_scan_path.name,
-            str(unchanged_count),
-            str(len(new_findings)),
-            str(len(final_merged_df))
-        ]
-    }
-    change_log_df = pd.DataFrame(log_data)
+    # 3. Export Consolidated Excel Workbook Package
+    TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = output_dir / f"NOAA5047_STIG_Master_Merged_{TIMESTAMP}.xlsx"
     
-    # 6. Write out cleanly structured Multi-Tab Excel Document
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         final_merged_df.to_excel(writer, sheet_name="Consolidated Master Tracker", index=False)
-        change_log_df.to_excel(writer, sheet_name="Change Log Summary", index=False)
         
-        # Isolate new items into an explicit actions worksheet
+        # Output sub-tabs for easier analyst workflows
         if new_findings:
             pd.DataFrame(new_findings).drop(columns=["_merge_key"], errors="ignore").to_excel(
                 writer, sheet_name="ISSO Review Required", index=False
@@ -157,33 +147,46 @@ def merge_deviation_sheets(master_path: Path, incoming_scan_path: Path, output_p
 
 
 if __name__ == "__main__":
-    import tkinter as tk
-    from tkinter import filedialog
-
-    # initialize a hidden tkinter root window for GUI file selection"
+    # Initialize UI Window environment
     root = tk.Tk()
-    root.withdraw()  # Hide the main window
+    root.withdraw()
     
-    # Prompt the user to select the source folder containing the CSVs
-    print("[*] Please select the directory containing your source documents in the pop-up window...")
-    selected_dir = filedialog.askdirectory(title="Select Folder with Source STIG Documents")
+    print("[*] Launching STIG Deviation File Router Dashboard...")
     
-    if not selected_dir:
-        print("[-] Operation cancelled. No folder selected.")
-        exit(1)
+    # 1. Ask user for input method
+    use_cloud = simpledialog.askstring(
+        "Source Ingestion Selector", 
+        "Type 'LOCAL' for file files (.xlsx, .csv) or 'CLOUD' for Google Sheets URL:",
+        initialvalue="LOCAL"
+    )
+    
+    if not use_cloud:
+        print("[-] Execution halted.")
+        exit(0)
         
-    # Convert the selected path to a Path object
-    source_dir = Path(selected_dir)
-    
-    # Define file paths based on the user-selected folder
-    MASTER_TRACKER = source_dir / "NOAA5047 DISA STIG Deviation Spreadsheet_offline.xlsx - Sheet1.csv"
-    INCOMING_SCAN = source_dir / "CATT_Extracted_Data.csv" 
-    
-    # Keep the output workbook in the user-selected source folder as well
-    TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
-    OUTPUT_FILE = source_dir / f"NOAA5047_STIG_Master_Merged_{TIMESTAMP}.xlsx"
-    
+    if use_cloud.upper() == "CLOUD":
+        # Prompt user to paste a Google Sheets URL
+        MASTER_TARGET = simpledialog.askstring("Google Sheets Link", "Paste Master Tracker Google Sheet URL:")
+        INCOMING_TARGET = simpledialog.askstring("Google Sheets Link", "Paste Incoming Scan Google Sheet URL:")
+        OUTPUT_DIRECTORY = Path(filedialog.askdirectory(title="Select Destination Folder for Final Report"))
+    else:
+        # Prompt user to browse directly for local files via cross-compatible extension masks
+        file_types = [("Spreadsheets", "*.xlsx *.csv *.xlsm"), ("Excel Workbooks", "*.xlsx"), ("Flat CSV Records", "*.csv")]
+        
+        print("[*] Please locate your Master Tracker spreadsheet file...")
+        MASTER_TARGET = filedialog.askopenfilename(title="Select MASTER Deviation Tracker Spreadsheet", filetypes=file_types)
+        
+        print("[*] Please locate your Incoming Scan sheet data file...")
+        INCOMING_TARGET = filedialog.askopenfilename(title="Select INCOMING Scan Findings File", filetypes=file_types)
+        
+        if not MASTER_TARGET or not INCOMING_TARGET:
+            print("[-] Required selections are missing. Terminating pipeline workflow loop execution.")
+            exit(1)
+            
+        OUTPUT_DIRECTORY = Path(MASTER_TARGET).parent
+
+    # Run execution engine
     try:
-        merge_deviation_sheets(MASTER_TRACKER, INCOMING_SCAN, OUTPUT_FILE)
+        merge_deviation_sheets(MASTER_TARGET, INCOMING_TARGET, OUTPUT_DIRECTORY)
     except Exception as e:
         print(f"[-] Critical Error running pipeline execution: {e}")
