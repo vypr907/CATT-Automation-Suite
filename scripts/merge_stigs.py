@@ -9,6 +9,9 @@ import pandas as pd
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
+# Import Openpyxl styling utilities for formatting the output workbook
+from openpyxl.styles import Alignment
+
 # Try loading optional integrations for Google Sheets
 try:
     import gspread
@@ -261,11 +264,85 @@ def merge_deviation_sheets():
     output_file_path = Path.cwd() / output_filename
     
     print(f"[*] Compiling worksheets into spreadsheet: {output_file_path}")
-    with pd.ExcelWriter(output_file_path, engine='xlsxwriter') as writer:
+
+    # Create the writer instance utilizing the openpyxl backend
+    
+    #with pd.ExcelWriter(output_file_path, engine='xlsxwriter') as writer:
+    #    master_df.to_excel(writer, sheet_name="Master Tracker Evaluation", index=False)
+    #    host_summary_df.to_excel(writer, sheet_name="Asset Summary", index=False)
+    #    plugin_summary_df.to_excel(writer, sheet_name="Plugin ID Summary", index=False)
+    #    incoming_df.drop(columns=['matching_key'], errors='ignore').to_excel(writer, sheet_name="Raw Scan Data Pool", index=False)
+
+    with pd.ExcelWriter(output_file_path, engine='openpyxl') as writer:
         master_df.to_excel(writer, sheet_name="Master Tracker Evaluation", index=False)
         host_summary_df.to_excel(writer, sheet_name="Asset Summary", index=False)
         plugin_summary_df.to_excel(writer, sheet_name="Plugin ID Summary", index=False)
         incoming_df.drop(columns=['matching_key'], errors='ignore').to_excel(writer, sheet_name="Raw Scan Data Pool", index=False)
+
+        # Using .items() gives us the exact sheet name string (sheet_name) 
+        # and the sheet object (worksheet) with zero engine dependencies
+        for sheet_name, worksheet in writer.sheets.items():
+            print(f"   [>] Optimizing column spacing and text wrapping rules on: '{sheet_name}'")
+            
+            # If pandas wrapped the sheet object, extract the raw openpyxl context safely
+            if hasattr(worksheet, 'sheet'):
+                worksheet = worksheet.sheet
+                
+            for col in worksheet.columns:
+                max_len = 0
+                col_letter = col[0].column_letter
+                
+                for cell in col:
+                    cell.alignment = Alignment(wrap_text=True, vertical="top", horizontal="left")
+                    
+                    if cell.value is not None:
+                        lines = str(cell.value).split('\n')
+                        for line in lines:
+                            if len(line) > max_len:
+                                max_len = len(line)
+                
+                calculated_width = max_len + 3
+                
+                if calculated_width > 60:
+                    worksheet.column_dimensions[col_letter].width = 60
+                else:
+                    worksheet.column_dimensions[col_letter].width = max(calculated_width, 11)
+
+        #COMMENTED OUT FOR NOW: Formatting block for column widths and text wrapping---------------------------------
+        # Access the openpyxl workbook and apply formatting to each sheet
+        #workbook = writer.book
+
+        #for sheet_wrapper in writer.sheets.values():
+        #    worksheet = sheet_wrapper.sheet # Access the underlying openpyxl worksheet object
+        #    print(f"   [>] Optimizing column spacing and text wrapping rules on: '{worksheet.title}'")
+        #    
+        #    # Loop through each column in the active worksheet
+        #    for col in worksheet.columns:
+        #        # Find out the maximum text length inside this column's cells
+        #        max_len = 0
+        #        col_letter = col[0].column_letter  # Extract column address indicator (e.g., 'A', 'B')
+        #        
+        #        for cell in col:
+        #            # Enforce top-left alignment and activate word-wrapping on every cell
+        #            cell.alignment = Alignment(wrap_text=True, vertical="top", horizontal="left")
+        #            
+        #            if cell.value is not None:
+        #                # Check line breaks to ensure correct width calculations on multi-line blobs
+        #                lines = str(cell.value).split('\n')
+        #                for line in lines:
+        #                    if len(line) > max_len:
+        #                        max_len = len(line)
+        #        
+        #        # Add padding to ensure header names/values aren't clipped by boundaries
+        #        calculated_width = max_len + 3
+        #        
+        #        # Constrain dimensions to a maximum of 60 characters to trigger text wrapping
+        #        if calculated_width > 60:
+        #            worksheet.column_dimensions[col_letter].width = 60
+        #        else:
+        #            # Keep column width standard if everything comfortably fits under 30 characters
+        #            worksheet.column_dimensions[col_letter].width = max(calculated_width, 11)
+        #---------------------------------------------------------------------------------------------------------
 
     print(f"[+] Execution completed successfully! File output: {output_filename}")
 
