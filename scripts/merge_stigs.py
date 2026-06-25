@@ -241,12 +241,14 @@ def merge_deviation_sheets():
 
     # Pool tracking records across sheets dynamically
     for sheet_name, df in scan_sheets_dict.items():
-        if df.empty or SCAN_HOST_COL not in df.columns:
+        # FIX: Check against a lowercased list of columns to ensure the expected hostname column exists
+        df_cols_lower = [str(c).strip().lower() for c in df.columns]
+        if df.empty or SCAN_HOST_COL not in df_cols_lower:
             continue
         df = df.copy()
         # FIX: Clean whitespace AND lowercase scan headers from column names to guarantee lookups work
         df.columns = [str(c).strip().lower() for c in df.columns]
-        df['Source Sheet'] = sheet_name
+        df['source sheet'] = sheet_name
         combined_scan_list.append(df)
         
     if not combined_scan_list:
