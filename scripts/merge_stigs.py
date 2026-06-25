@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox
 
 # Import Openpyxl styling utilities for formatting the output workbook
 from openpyxl.styles import Alignment
+from openpyxl.utils import get_column_letter
 
 # Try loading optional integrations for Google Sheets
 try:
@@ -23,16 +24,44 @@ except ImportError:
 # ==============================================================================
 # CONFIGURATION & COLUMN MAPPING
 # ==============================================================================
-MASTER_IP_COL = "IP Address"
-MASTER_HOST_COL = "Host Name"
-MASTER_STIG_COL = "Benchmark Exceptions List"
+# Deviation Tracker Column Constants (Master Sheet)
+DEV_IP_COL = "IP Address"
+DEV_HOST_COL = "Host Name"
+DEV_FACING_COL = "host is Internal or Public-Facing" # Matches exact spacing
+DEV_TYPE_COL = "Host Type "
+DEV_SW_COL = "Software Name "
+DEV_BENCH_COL = "Specify Benchmark Followed "
+DEV_EXCEPT_COL = "Benchmark Exceptions List "
+DEV_JUST_COL = "Justifications for Exemptions "
+DEV_MIT_COL = "Mitigating Controls "
+DEV_COMP_COL = "Compensating Controls "
 
-# Normal configurations
+# Incoming Scan Column Constants (Raw Scan Data)
 # INCOMING_IP_HOST_COL = "Host Name"  # This column holds the IP strings in incoming data //COMMENTING OUT FOR NOW
-INCOMING_STIG_COL = "STIG"
-INCOMING_RESULT_COL = "Result"
-INCOMING_PLUGIN_COL = "Plugin ID"
-INCOMING_PLUGIN_NAME = "Plugin Name"
+SCAN_HOST_COL = "Hostname"  # This column holds IP addresses strings in incoming data
+SCAN_STIG_COL = "STIG"
+SCAN_RESULT_COL = "Result"
+SCAN_PLUGIN_COL = "Plugin ID"
+SCAN_PLUGIN_NAME = "Plugin Name"
+SCAN_SHORT_DESC = "Short Description"
+SCAN_PASTEABLE = "Pasteable"
+
+def normalize_ip(ip_val) -> str:
+    """Helper function to normalize IP addresses/join keys uniformly"""
+    if pd.isna(ip_val):
+        return ""
+    return str(ip_val).strip().lower()
+
+def is_active_failure(result_val) -> bool:
+    """Helper function to determine if a scan result indicates an active failure"""
+    if pd.isna(result_val):
+        return False
+    return str(result_val).strip().upper() in ["FAILED", "FAIL"]
+
+def clean_join_list(items_list, separator=", ") -> str:
+    """Helper function to clean, deduplicate, and merge readable text arrays / join a list of items into a single string"""
+    cleaned = sorted(list(set([str(x).strip() for x in items_list if pd.notna(x) and str(x).strip() != ""])))
+    return separator.join(cleaned)
 
 def generate_composite_key(ip_or_host: str, stig_id: str) -> str:
     """Generates a tracking key combining asset and rule signature."""
@@ -163,178 +192,272 @@ def gui_select_save_destination(default_filename: str) -> Path:
 def merge_deviation_sheets():
     print(f"[*] Starting STIG pipeline processing algorithm at {datetime.now()}")
     
-    # 1. Graphical User Interface Data Ingestion Picker Steps
-    master_sheets = gui_select_source("Master Deviation Tracker Spreadsheet")
-    master_sheet_name = list(master_sheets.keys())[0]
-    master_df = master_sheets[master_sheet_name].copy()
-    print(f"[+] Loaded Master Tracker Sheet '{master_sheet_name}': {len(master_df)} rows found.")
-    
-    incoming_sheets = gui_select_source("Incoming Raw Scan Workbooks Pool")
-    combined_incoming_list = []
-    
-    # Pool tracking records across sheets dynamically
-    for sheet_name, df in incoming_sheets.items():
-        if df.empty:
-            continue
+    # Intialize Tkinter hidden Root Window for GUI dialogs
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)  # Forces pop-up folder dialog over terminal
 
-        # Dynamically search for the Host column variant (e.g., 'Host Name' vs 'Hostname')
-        detected_host_col = find_hostname_column(df.columns)
-        if not detected_host_col:
-            print(f"[-] Skipping sheet '{sheet_name}': Could not determine Host Name / IP column header.")
-            continue
+    #-----------------------------------------------
+    # STEP 1 & 2: Ingest and Normalize Data Sources
+    #-----------------------------------------------
 
-        df = df.copy()
-        # Normalize the detected column into a standard internal name for the pipeline processing
-        df['Normalized_Host_Identifier'] = df[detected_host_col]
-        df['Scan_Source_Sheet'] = sheet_name
-        combined_incoming_list.append(df)
+
+    print(f"\n[*] Opening File Explorer Window: Choose [Master Deviation Tracker Spreadsheet]")
+    master_file = filedialog.askopenfilename(
+        title="Select Master Deviation Tracker Spreadsheet",
+        filetypes=[("Excel Workbooks", "*.xlsx")]
+    )
+    if not master_file:
+        print("[-] Execution canceled: Master tracker file not provided.")
+        sys.exit(0)
         
-    if not combined_incoming_list:
-        print("[-] Critical Error: No matching tracking headers could be found in the incoming scans selection.")
+    master_df = pd.read_excel(master_file, sheet_name=0)
+    print(f"[+] Loaded Master Tracker Sheet: {len(master_df)} rows found.")
+    
+    print(f"\n[*] Opening File Explorer Window: Choose [Incoming Raw Scan Workbooks Pool]")
+    scan_file = filedialog.askopenfilename(
+        title="Select Incoming Raw Scan Workbook Pool",
+        filetypes=[("Excel Workbooks", "*.xlsx")]
+    )
+    if not scan_file:
+        print("[-] Execution canceled: Scan data file not provided.")
+        sys.exit(0)
+        
+    scan_excel = pd.ExcelFile(scan_file)
+    scan_sheets_dict = {sheet: scan_excel.parse(sheet) for sheet in scan_excel.sheet_names}
+    
+    # --------------------------------------------------------------------------
+    # SHEET 2 Generation: Raw Scan Data Pool (Grain: One row per scan finding)
+    # --------------------------------------------------------------------------
+    combined_scan_list = []
+    for sheet_name, df in scan_sheets_dict.items():
+        if df.empty or SCAN_HOST_COL not in df.columns:
+            continue
+        df = df.copy()
+        df['Source Sheet'] = sheet_name
+        combined_scan_list.append(df)
+        
+    if not combined_scan_list:
+        print("[-] Critical Error: No matching scan sheets could be constructed.")
         sys.exit(1)
         
-    incoming_df = pd.concat(combined_incoming_list, ignore_index=True)
-    print(f"[+] Combined Incoming Scan Inventory Total: {len(incoming_df)} rows.")
+    raw_scan_pool_df = pd.concat(combined_scan_list, ignore_index=True)
+    print(f"[+] Combined Authoritative Raw Scan Data Pool (Sheet 2): {len(raw_scan_pool_df)} rows.")
 
-    # 2. Normalize and Build Functional Tracking Keys
-    string_cols = master_df.select_dtypes(include=["object", "string"]).columns
-    master_df[string_cols] = master_df[string_cols].apply(lambda x: x.str.strip() if hasattr(x, 'str') else x)
+    # Apply global string normalization values to tracking arrays
+    raw_scan_pool_df['norm_ip'] = raw_scan_pool_df[SCAN_HOST_COL].apply(normalize_ip)
+    master_df['norm_ip'] = master_df[DEV_IP_COL].apply(normalize_ip)
+
+    # Remove completely empty rows from the Master data frame join array
+    master_df = master_df[master_df['norm_ip'] != ""].copy()
+
+    # Get a list of all unique IP addresses across both files
+    all_unique_ips = sorted(list(set(master_df['norm_ip'].unique()).union(set(raw_scan_pool_df['norm_ip'].unique()))))
+
+    # --------------------------------------------------------------------------
+    # SHEET 1 Generation: Master Tracker Evaluation and Asset Summary
+    # Grain: One row per unique IP address / asset
+    # --------------------------------------------------------------------------
+    print("[*] Compiling Sheet 1 (Master Tracker Evaluation and Asset Summary)...")
+    sheet1_rows = []
     
-    incoming_df['Normalized_Host_Identifier'] = incoming_df['Normalized_Host_Identifier'].astype(str).str.strip()
-    incoming_df[INCOMING_STIG_COL] = incoming_df[INCOMING_STIG_COL].astype(str).str.strip()
-    incoming_df[INCOMING_RESULT_COL] = incoming_df[INCOMING_RESULT_COL].astype(str).str.strip().str.upper()
-
-    incoming_keys = set()
-    for idx, row in incoming_df.iterrows():
-        key = generate_composite_key(row['Normalized_Host_Identifier'], row[INCOMING_STIG_COL])
-        incoming_keys.add(key)
-        incoming_df.at[idx, 'matching_key'] = key
-
-    # 3. Cross-Reference Evaluation Block
-    master_df['Latest_Scan_Status'] = "Not Seen in Latest Scan"
-    
-    for idx, row in master_df.iterrows():
-        master_ip = str(row.get(MASTER_IP_COL, "")).strip().lower()
-        master_stig_blob = str(row.get(MASTER_STIG_COL, "")).strip().upper()
+    for ip in all_unique_ips:
+        # Filter raw pool data to pull details for this asset
+        ip_scan_findings = raw_scan_pool_df[raw_scan_pool_df['norm_ip'] == ip]
+        ip_failures = ip_scan_findings[ip_scan_findings[SCAN_RESULT_COL].apply(is_active_failure)]
         
-        if not master_ip or master_ip == "nan":
-            continue
+        # Calculate asset rollup compliance properties
+        total_open_failures = len(ip_failures)
+        failed_stig_ids = clean_join_list(ip_failures[SCAN_STIG_COL].unique(), separator=", ")
+        source_sheets = clean_join_list(ip_scan_findings['Source Sheet'].unique(), separator=", ")
+        
+        # Fetch the matching row from the Master Tracker if it exists
+        matching_dev = master_df[master_df['norm_ip'] == ip]
+        
+        if not matching_dev.empty:
+            dev_row = matching_dev.iloc[0]
+            # Map manual variables straight from existing records
+            orig_ip = dev_row.get(DEV_IP_COL, "")
+            orig_host = dev_row.get(DEV_HOST_COL, "")
+            orig_facing = dev_row.get(DEV_FACING_COL, "")
+            orig_sw = dev_row.get(DEV_SW_COL, "")
+            orig_bench = dev_row.get(DEV_BENCH_COL, "")
+            base_exceptions = str(dev_row.get(DEV_EXCEPT_COL, "")) if pd.notna(dev_row.get(DEV_EXCEPT_COL, "")) else ""
+            orig_just = dev_row.get(DEV_JUST_COL, "")
+            orig_mit = dev_row.get(DEV_MIT_COL, "")
+            orig_comp = dev_row.get(DEV_COMP_COL, "")
+        else:
+            # Create default placeholders for newly discovered assets
+            orig_ip = ip_scan_findings[SCAN_HOST_COL].iloc[0] if not ip_scan_findings.empty else ip
+            orig_host = ""
+            orig_facing = ""
+            orig_sw = ""
+            orig_bench = ""
+            base_exceptions = ""
+            orig_just = ""
+            orig_mit = ""
+            orig_comp = ""
+
+        # Smart Append Logic: Extract unique Pasteable text blocks and check if they are already in the base string
+        unique_scan_pasteables = ip_scan_findings[SCAN_PASTEABLE].dropna().unique()
+        appended_exceptions = base_exceptions.strip()
+        
+        for paste_item in unique_scan_pasteables:
+            paste_str = str(paste_item).strip()
+            if paste_str and paste_str not in appended_exceptions:
+                if appended_exceptions:
+                    appended_exceptions += "\n" + paste_str
+                else:
+                    appended_exceptions = paste_str
+
+        # Append row object to Sheet 1 dataset array matching instructions
+        sheet1_rows.append({
+            "IP Address": orig_ip,
+            "Hostname": orig_host,
+            "Internal/Public-Facing": orig_facing,
+            "Software Name": orig_sw,
+            "Specify Benchmark": orig_bench,
+            "Total Open Failures": total_open_failures,
+            "Failed STIG IDs": failed_stig_ids if failed_stig_ids else "None",
+            "System Classification Source Sheets": source_sheets if source_sheets else "Not Seen in Scans",
+            "Benchmark Exceptions List": appended_exceptions,
+            "Justifications for Exemptions": orig_just,
+            "Mitigating Controls": orig_mit,
+            "Compensating Controls": orig_comp
+        })
+        
+    sheet1_df = pd.DataFrame(sheet1_rows)
+
+    # --------------------------------------------------------------------------
+    # SHEET 3 Generation: STIG ID Summary (Grain: One row per unique STIG ID)
+    # --------------------------------------------------------------------------
+    print("[*] Compiling Sheet 3 (STIG ID Summary)...")
+    sheet3_rows = []
+    unique_stigs = [x for x in raw_scan_pool_df[SCAN_STIG_COL].dropna().unique() if str(x).strip() != ""]
+    
+    for stig_id in sorted(unique_stigs):
+        stig_data = raw_scan_pool_df[raw_scan_pool_df[SCAN_STIG_COL] == stig_id]
+        stig_failures = stig_data[stig_data[SCAN_RESULT_COL].apply(is_active_failure)]
+        
+        plugin_ids = clean_join_list(header_variant_map if 'header_variant_map' in locals() else stig_data[SCAN_PLUGIN_COL].unique())
+        
+        # Pick description column cleanly prioritizing Short Desc, then Plugin Name
+        if SCAN_SHORT_DESC in stig_data.columns and stig_data[SCAN_SHORT_DESC].notna().any():
+            description = str(stig_data[SCAN_SHORT_DESC].dropna().iloc[0]).strip()
+        elif SCAN_PLUGIN_NAME in stig_data.columns and stig_data[SCAN_PLUGIN_NAME].notna().any():
+            description = str(stig_data[SCAN_PLUGIN_NAME].dropna().iloc[0]).strip()
+        else:
+            description = "N/A"
             
-        matched_in_scan = False
-        is_failing_in_scan = False
+        findings_list = clean_join_list(stig_data[SCAN_PASTEABLE].unique(), separator="\n")
+        impacted_hosts = clean_join_list(stig_data[SCAN_HOST_COL].unique())
+        total_active_failures = len(stig_failures)
         
-        for key in incoming_keys:
-            scan_ip, scan_stig = key.split("::")
-            if scan_ip == master_ip and scan_stig in master_stig_blob:
-                matched_in_scan = True
-                match_rows = incoming_df[incoming_df['matching_key'] == key]
-                if any(match_rows[INCOMING_RESULT_COL].isin(["FAILED", "FAIL"])):
-                    is_failing_in_scan = True
-        
-        if matched_in_scan:
-            master_df.at[idx, 'Latest_Scan_Status'] = "FAIL / Still Failing" if is_failing_in_scan else "PASS / Candidate for Closure"
-
-    # 4. Generate Asset Profiles Rollup Sheet (1 Row per Hostname/IP)
-    print("[*] Compiling Hostname-centric rollup telemetry...")
-    host_summary_data = []
-    unique_hosts = incoming_df['Normalized_Host_Identifier'].unique()
-    
-    for host in unique_hosts:
-        host_findings = incoming_df[incoming_df['Normalized_Host_Identifier'] == host]
-        fails = host_findings[host_findings[INCOMING_RESULT_COL].isin(["FAILED", "FAIL"])]
-        passes = host_findings[host_findings[INCOMING_RESULT_COL].isin(["PASSED", "PASS"])]
-        
-        failed_stig_list = ", ".join(fails[INCOMING_STIG_COL].unique())
-        source_sheets = ", ".join(host_findings['Scan_Source_Sheet'].unique())
-        
-        host_summary_data.append({
-            "Host Name / IP Address": host,
-            "Total Scan Checks": len(host_findings),
-            "Total Open Failures": len(fails),
-            "Total Passed Checks": len(passes),
-            "Failed STIG IDs": failed_stig_list if failed_stig_list else "None",
-            "System Classification Source Sheets": source_sheets
+        sheet3_rows.append({
+            "STIG ID": stig_id,
+            "Plugin ID(s)": plugin_ids,
+            "Rule Title / Description": description,
+            "Findings List": findings_list,
+            "Impacted Host List": impacted_hosts,
+            "Total Active Host Failures": total_active_failures
         })
-    host_summary_df = pd.DataFrame(host_summary_data)
+        
+    sheet3_df = pd.DataFrame(sheet3_rows)
 
-    # 5. Generate Plugin ID Profiles Rollup Sheet (1 Row per Unique Plugin ID)
-    print("[*] Compiling Plugin-centric rollup telemetry...")
-    plugin_summary_data = []
-    unique_plugins = incoming_df[INCOMING_PLUGIN_COL].unique()
+    # --------------------------------------------------------------------------
+    # SHEET 4 Generation: Plugin ID Summary (Grain: Preserved Plugin ID Logic)
+    # --------------------------------------------------------------------------
+    print("[*] Compiling Sheet 4 (Plugin ID Summary)...")
+    sheet4_rows = []
+    unique_plugins = [x for x in raw_scan_pool_df[SCAN_PLUGIN_COL].dropna().unique() if str(x).strip() != ""]
     
-    for plugin in unique_plugins:
-        plugin_findings = incoming_df[incoming_df[INCOMING_PLUGIN_COL] == plugin]
-        plugin_fails = plugin_findings[plugin_findings[INCOMING_RESULT_COL].isin(["FAILED", "FAIL"])]
+    for plugin_id in sorted(unique_plugins):
+        plugin_data = raw_scan_pool_df[raw_scan_pool_df[SCAN_PLUGIN_COL] == plugin_id]
+        plugin_failures = plugin_data[plugin_data[SCAN_RESULT_COL].apply(is_active_failure)]
         
-        failed_hosts = ", ".join(plugin_fails['Normalized_Host_Identifier'].unique())
-        sample_stig_id = plugin_findings[INCOMING_STIG_COL].iloc[0]
-        sample_plugin_name = plugin_findings[INCOMING_PLUGIN_NAME].iloc[0] if INCOMING_PLUGIN_NAME in plugin_findings.columns else "N/A"
+        associated_stigs = clean_join_list(plugin_data[SCAN_STIG_COL].unique())
         
-        plugin_summary_data.append({
-            "Plugin ID": plugin,
-            "Associated STIG ID": sample_stig_id,
-            "Rule Title / Description": sample_plugin_name,
-            "Total Evaluated Items": len(plugin_findings),
-            "Total Active Host Failures": len(plugin_fails),
-            "Impacted Host List": failed_hosts if failed_hosts else "None"
+        if SCAN_PLUGIN_NAME in plugin_data.columns and plugin_data[SCAN_PLUGIN_NAME].notna().any():
+            p_desc = str(plugin_data[SCAN_PLUGIN_NAME].dropna().iloc[0]).strip()
+        else:
+            p_desc = "N/A"
+            
+        total_evaluated = len(plugin_data)
+        total_active_failures = len(plugin_failures)
+        impacted_hosts = clean_join_list(plugin_failures[SCAN_HOST_COL].unique())
+        
+        sheet4_rows.append({
+            "Plugin ID": plugin_id,
+            "Associated STIG ID(s)": associated_stigs,
+            "Rule Title / Description": p_desc,
+            "Total Evaluated Items": total_evaluated,
+            "Total Active Host Failures": total_active_failures,
+            "Impacted Host List": impacted_hosts if impacted_hosts else "None"
         })
-    plugin_summary_df = pd.DataFrame(plugin_summary_data)
+        
+    sheet4_df = pd.DataFrame(sheet4_rows)
 
-    # 6. Build the Final Multi-Sheet Output Workbook Layout
+    # --------------------------------------------------------------------------
+    # STEP 6: Prompt for Destination & Apply Workbook Layout Formatting
+    # --------------------------------------------------------------------------
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_filename = f"Consolidated_STIG_Merge_Report_{timestamp}.xlsx"
-    #output_file_path = Path.cwd() / output_filename
-    output_file_path = gui_select_save_destination(output_filename)
+    default_filename = f"Consolidated_STIG_Merge_Report_{timestamp}.xlsx"
     
-    print(f"[*] Compiling worksheets into spreadsheet: {output_file_path}")
-
-    # Create the writer instance utilizing the openpyxl backend
+    print("\n[*] Opening File Explorer Window: Choose destination folder to SAVE report...")
+    save_dest = filedialog.asksaveasfilename(
+        title="Save Consolidated STIG Report",
+        initialfile=default_filename,
+        defaultextension=".xlsx",
+        filetypes=[("Excel Workbook", "*.xlsx")]
+    )
     
-    #with pd.ExcelWriter(output_file_path, engine='xlsxwriter') as writer:   //XLSXWRITER is not compatible with openpyxl styling, so we use openpyxl directly
-    with pd.ExcelWriter(output_file_path, engine='openpyxl') as writer:
-        master_df.to_excel(writer, sheet_name="Master Tracker Evaluation", index=False)
-        host_summary_df.to_excel(writer, sheet_name="Asset Summary", index=False)
-        plugin_summary_df.to_excel(writer, sheet_name="Plugin ID Summary", index=False)
-        incoming_df.drop(columns=['matching_key'], errors='ignore').to_excel(writer, sheet_name="Raw Scan Data Pool", index=False)
-
-        # Using .items() gives us the exact sheet name string (sheet_name) 
-        # and the sheet object (worksheet) with zero engine dependencies
+    if not save_dest:
+        print("[-] Save operation canceled by operator. Defaulting to local workspace directory.")
+        save_dest = Path.cwd() / default_filename
+    else:
+        save_dest = Path(save_dest)
+        
+    print(f"[*] Compiling worksheets into spreadsheet: {save_dest}")
+    
+    with pd.ExcelWriter(save_dest, engine='openpyxl') as writer:
+        sheet1_df.to_excel(writer, sheet_name="Master Tracker Evaluation", index=False)
+        raw_scan_pool_df.drop(columns=['norm_ip'], errors='ignore').to_excel(writer, sheet_name="Raw Scan Data Pool", index=False)
+        sheet3_df.to_excel(writer, sheet_name="STIG ID Summary", index=False)
+        sheet4_df.to_excel(writer, sheet_name="Plugin ID Summary", index=False)
+        
+        # Format the spreadsheet cells cleanly
         for sheet_name, worksheet in writer.sheets.items():
             print(f"   [>] Optimizing column spacing and text wrapping rules on: '{sheet_name}'")
             
-            # If pandas wrapped the sheet object, extract the raw openpyxl context safely
             if hasattr(worksheet, 'sheet'):
                 worksheet = worksheet.sheet
-
-            # Loop through each column in the active worksheet    
-            for col in worksheet.columns:
-                # Find out the maximum text length inside this column's cells
-                max_len = 0
-                col_letter = col[0].column_letter
                 
-                for cell in col:
-                    # Enforce top-left alignment and activate word-wrapping on every cell
+            # Freeze the top header row on the current worksheet
+            worksheet.freeze_panes = "A2"
+            
+            # Iterate through columns using safe index logic
+            for col_idx in range(1, worksheet.max_column + 1):
+                max_len = 0
+                col_letter = get_column_letter(col_idx)
+                
+                for row_idx in range(1, worksheet.max_row + 1):
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
                     cell.alignment = Alignment(wrap_text=True, vertical="top", horizontal="left")
                     
                     if cell.value is not None:
-                        # Check line breaks to ensure correct width calculations on multi-line blobs
                         lines = str(cell.value).split('\n')
                         for line in lines:
                             if len(line) > max_len:
                                 max_len = len(line)
-                
-                # Add padding to ensure header names/values aren't clipped by boundaries
+                                
                 calculated_width = max_len + 3
-                
-                # Constrain dimensions to a maximum of 60 characters to trigger text wrapping
-                if calculated_width > 60:
-                    worksheet.column_dimensions[col_letter].width = 60
+                if calculated_width > 30:
+                    worksheet.column_dimensions[col_letter].width = 30
                 else:
-                    # Keep column width standard if everything comfortably fits under 60 characters
                     worksheet.column_dimensions[col_letter].width = max(calculated_width, 11)
 
-
-    print(f"[+] Execution completed successfully! File output: {output_filename}")
+    print(f"[+] Process complete! Saved file context output directly to: {save_dest.name}")
+    root.destroy()
 
 # ==============================================================================
 # RUNNER RUN INTERFACE
