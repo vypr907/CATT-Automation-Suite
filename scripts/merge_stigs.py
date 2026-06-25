@@ -262,6 +262,10 @@ def merge_deviation_sheets():
     raw_scan_pool_df['norm_ip'] = raw_scan_pool_df[SCAN_HOST_COL].apply(normalize_ip)
     master_df['norm_ip'] = master_df[DEV_IP_COL].apply(normalize_ip)
 
+    # DEBUG
+    print(f"DEBUG: Sample IPs in Scan Pool: {list(raw_scan_pool_df['norm_ip'].unique()[:5])}")
+    print(f"DEBUG: Sample IPs in Master Tracker: {list(master_df['norm_ip'].unique()[:5])}")
+
     # Remove completely empty rows from the Master data frame join array
     master_df = master_df[master_df['norm_ip'] != ""].copy()
 
@@ -277,7 +281,11 @@ def merge_deviation_sheets():
     
     for ip in all_unique_ips:
         # Filter raw pool data to pull details for this asset
-        ip_scan_findings = raw_scan_pool_df[raw_scan_pool_df['norm_ip'] == ip]
+        # FIX: Ensure absolute clean string matching by stripping the target key inline
+        clean_ip_target = str(ip).strip().lower()
+        
+        # Filter raw pool data strictly using the sanitized target string
+        ip_scan_findings = raw_scan_pool_df[raw_scan_pool_df['norm_ip'].str.strip() == clean_ip_target]
         ip_failures = ip_scan_findings[ip_scan_findings[SCAN_RESULT_COL].apply(is_active_failure)]
         
         # Calculate asset rollup compliance properties
@@ -322,7 +330,7 @@ def merge_deviation_sheets():
             orig_comp = ""
 
         # Smart Append Logic: Extract unique Pasteable text blocks and check if they are already in the base string
-        unique_scan_pasteables = ip_scan_findings[SCAN_PASTEABLE].dropna().unique()
+        unique_scan_pasteables = sorted(list(ip_scan_findings[SCAN_PASTEABLE].dropna().unique()))
         appended_exceptions = base_exceptions.strip()
         
         for paste_item in unique_scan_pasteables:
