@@ -27,14 +27,14 @@ except ImportError:
 # Deviation Tracker Column Constants (Master Sheet)
 DEV_IP_COL = "IP Address"
 DEV_HOST_COL = "Host Name"
-DEV_FACING_COL = "host is Internal or Public-Facing" # Matches exact spacing
-DEV_TYPE_COL = "Host Type "
-DEV_SW_COL = "Software Name "
-DEV_BENCH_COL = "Specify Benchmark Followed "
-DEV_EXCEPT_COL = "Benchmark Exceptions List "
-DEV_JUST_COL = "Justifications for Exemptions "
-DEV_MIT_COL = "Mitigating Controls "
-DEV_COMP_COL = "Compensating Controls "
+DEV_FACING_COL = "Host is Internal or Public-Facing" # Matches exact spacing
+DEV_TYPE_COL = "Host Type"
+DEV_SW_COL = "Software Name"
+DEV_BENCH_COL = "Specify Benchmark followed"
+DEV_EXCEPT_COL = "Benchmark Exceptions List"
+DEV_JUST_COL = "Justifications for Exemptions"
+DEV_MIT_COL = "Mitigating Controls"
+DEV_COMP_COL = "Compensating Controls"
 
 # Incoming Scan Column Constants (Raw Scan Data)
 # INCOMING_IP_HOST_COL = "Host Name"  # This column holds the IP strings in incoming data //COMMENTING OUT FOR NOW
@@ -71,9 +71,9 @@ def generate_composite_key(ip_or_host: str, stig_id: str) -> str:
 
 def find_hostname_column(columns) -> str:
     """Dynamically locates the asset/hostname identifier column matching variants."""
-    normalized_cols = {str(c).strip().lower().replace(" ", ""): str(c) for c in columns}
-    # Look for common variants
-    for variant in ["hostname", "hostname", "hostaddress", "ipaddress"]:
+    normalized_cols = {str(c).strip().lower().replace(" ", "").replace("_", ""): str(c) for c in columns}
+    # Look for cleaned common variations found in Nessus/Tenable and your tracker
+    for variant in ["hostname", "ipaddress", "hostname", "host", "ip"]:
         if variant in normalized_cols:
             return normalized_cols[variant]
     return ""
@@ -112,13 +112,20 @@ def load_from_google_sheets(target_input: str) -> dict[str, pd.DataFrame]:
         sys.exit(1)
 
 def load_local_file(file_path: Path) -> dict[str, pd.DataFrame]:
-    """Loads a local .xlsx or .csf file safely, mapping sheet names to dataframes."""
-    print(f"[+] Parsing local Excel Workbook: {file_path.name}")
+    """Loads a local .xlsx or .csv file safely, mapping sheet names to dataframes."""
+    print(f"[+] Parsing local File: {file_path.name}")
     suffix = file_path.suffix.lower()
+
     if suffix == ".xlsx":
-        return pd.read_excel(file_path, sheet_name=None)
+        sheets = pd.read_excel(file_path, sheet_name=None)
+        # Normalize column names for each sheet to ensure consistent lookups
+        for sheet_name in sheets:
+            sheets[sheet_name].columns = [str(c).strip() for c in sheets[sheet_name].columns]
+        return sheets
     elif suffix == ".csv":
         df = pd.read_csv(file_path)
+        # Normalize column names for the CSV to ensure consistent lookups
+        df.columns = [str(c).strip() for c in df.columns]
         return {file_path.stem: df}
     else:
         print(f"[-] Unsupported file type '{suffix}' for file: {file_path.name}. Only .xlsx and .csv are supported.")
@@ -212,6 +219,8 @@ def merge_deviation_sheets():
         sys.exit(0)
         
     master_df = pd.read_excel(master_file, sheet_name=0)
+    # Fix: Clean whitespaces from column names to guarantee lookups work
+    master_df.columns = [str(c).strip() for c in master_df.columns]
     print(f"[+] Loaded Master Tracker Sheet: {len(master_df)} rows found.")
     
     print(f"\n[*] Opening File Explorer Window: Choose [Incoming Raw Scan Workbooks Pool]")
@@ -230,10 +239,14 @@ def merge_deviation_sheets():
     # SHEET 2 Generation: Raw Scan Data Pool (Grain: One row per scan finding)
     # --------------------------------------------------------------------------
     combined_scan_list = []
+
+    # Pool tracking records across sheets dynamically
     for sheet_name, df in scan_sheets_dict.items():
         if df.empty or SCAN_HOST_COL not in df.columns:
             continue
         df = df.copy()
+        # FIX: Clean whitespaces from column names to guarantee lookups work
+        df.columns = [str(c).strip() for c in df.columns]
         df['Source Sheet'] = sheet_name
         combined_scan_list.append(df)
         
@@ -268,7 +281,16 @@ def merge_deviation_sheets():
         
         # Calculate asset rollup compliance properties
         total_open_failures = len(ip_failures)
-        failed_stig_ids = clean_join_list(ip_failures[SCAN_STIG_COL].unique(), separator=", ")
+
+        # FIX: Ensure it leaves the field blank if there are absolutely no scan findings for this asset
+        if ip_scan_findings.empty:
+            failed_stig_ids = ""
+        elif SCAN_STIG_COL in ip_failures.columns:
+            failed_stig_ids = clean_join_list(ip_failures[SCAN_STIG_COL].unique(), separator=", ")
+        else:
+            failed_stig_ids = "Column Missing"
+        
+        
         source_sheets = clean_join_list(ip_scan_findings['Source Sheet'].unique(), separator=", ")
         
         # Fetch the matching row from the Master Tracker if it exists
@@ -451,8 +473,8 @@ def merge_deviation_sheets():
                                 max_len = len(line)
                                 
                 calculated_width = max_len + 3
-                if calculated_width > 30:
-                    worksheet.column_dimensions[col_letter].width = 30
+                if calculated_width > 90:
+                    worksheet.column_dimensions[col_letter].width = 90
                 else:
                     worksheet.column_dimensions[col_letter].width = max(calculated_width, 11)
 
