@@ -138,6 +138,28 @@ def gui_select_source(label: str) -> dict[str, pd.DataFrame]:
         root.destroy()
         return load_local_file(Path(file_selected))
 
+def gui_select_save_destination(default_filename: str) -> Path:
+    """Pops up a Graphical Save Dialog Window for selecting output path destination."""
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    
+    print("\n[*] Opening File Explorer Window: Choose destination folder to SAVE report...")
+    file_destination = filedialog.asksaveasfilename(
+        title="Save Consolidated STIG Report",
+        initialfile=default_filename,
+        defaultextension=".xlsx",
+        filetypes=[("Excel Workbook", "*.xlsx")]
+    )
+    
+    if not file_destination:
+        print("[-] Save operation canceled by operator. Defaulting to local working directory instead.")
+        root.destroy()
+        return Path.cwd() / default_filename
+        
+    root.destroy()
+    return Path(file_destination)
+
 def merge_deviation_sheets():
     print(f"[*] Starting STIG pipeline processing algorithm at {datetime.now()}")
     
@@ -261,7 +283,8 @@ def merge_deviation_sheets():
     # 6. Build the Final Multi-Sheet Output Workbook Layout
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_filename = f"Consolidated_STIG_Merge_Report_{timestamp}.xlsx"
-    output_file_path = Path.cwd() / output_filename
+    #output_file_path = Path.cwd() / output_filename
+    output_file_path = gui_select_save_destination(output_filename)
     
     print(f"[*] Compiling worksheets into spreadsheet: {output_file_path}")
 
