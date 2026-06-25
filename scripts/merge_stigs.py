@@ -37,14 +37,13 @@ DEV_MIT_COL = "Mitigating Controls"
 DEV_COMP_COL = "Compensating Controls"
 
 # Incoming Scan Column Constants (Raw Scan Data)
-# INCOMING_IP_HOST_COL = "Host Name"  # This column holds the IP strings in incoming data //COMMENTING OUT FOR NOW
-SCAN_HOST_COL = "Hostname"  # This column holds IP addresses strings in incoming data
-SCAN_STIG_COL = "STIG"
-SCAN_RESULT_COL = "Result"
-SCAN_PLUGIN_COL = "Plugin ID"
-SCAN_PLUGIN_NAME = "Plugin Name"
-SCAN_SHORT_DESC = "Short Description"
-SCAN_PASTEABLE = "Pasteable"
+SCAN_HOST_COL = "hostname"  # This column holds IP addresses strings in incoming data
+SCAN_STIG_COL = "stig"
+SCAN_RESULT_COL = "result"
+SCAN_PLUGIN_COL = "plugin id"
+SCAN_PLUGIN_NAME = "plugin name"
+SCAN_SHORT_DESC = "short description"
+SCAN_PASTEABLE = "pasteable"
 
 def normalize_ip(ip_val) -> str:
     """Helper function to normalize IP addresses/join keys uniformly"""
@@ -245,8 +244,8 @@ def merge_deviation_sheets():
         if df.empty or SCAN_HOST_COL not in df.columns:
             continue
         df = df.copy()
-        # FIX: Clean whitespaces from column names to guarantee lookups work
-        df.columns = [str(c).strip() for c in df.columns]
+        # FIX: Clean whitespace AND lowercase scan headers from column names to guarantee lookups work
+        df.columns = [str(c).strip().lower() for c in df.columns]
         df['Source Sheet'] = sheet_name
         combined_scan_list.append(df)
         
@@ -291,7 +290,7 @@ def merge_deviation_sheets():
             failed_stig_ids = "Column Missing"
         
         
-        source_sheets = clean_join_list(ip_scan_findings['Source Sheet'].unique(), separator=", ")
+        source_sheets = clean_join_list(ip_scan_findings['source sheet'].unique(), separator=", ")
         
         # Fetch the matching row from the Master Tracker if it exists
         matching_dev = master_df[master_df['norm_ip'] == ip]
