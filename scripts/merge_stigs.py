@@ -293,9 +293,43 @@ def merge_deviation_sheets():
     print("[*] Compiling Sheet 1 (Master Tracker Evaluation and Asset Summary)...")
     sheet1_rows = []
     
+    # --------------------------------------------------------------------------
+    # PRE-CALCULATION: Track AI requirements per IP for Sheet 1 mapping
+    # --------------------------------------------------------------------------
+    ip_needs_ai_map = {}
     for ip in all_unique_ips:
-        # Filter raw pool data to pull details for this asset
-        # FIX: Ensure absolute clean string matching by stripping the target key inline
+        clean_ip_target = str(ip).strip().lower()
+        ip_scan_findings = raw_scan_pool_df[raw_scan_pool_df['norm_ip'].str.strip() == clean_ip_target]
+        ip_failures = ip_scan_findings[ip_scan_findings[SCAN_RESULT_COL].apply(is_active_failure)]
+        
+        matching_master = master_df[master_df['norm_ip'] == clean_ip_target]
+        base_exceptions_blob = ""
+        if not matching_master.empty:
+            base_exceptions_blob = str(matching_master.iloc[0].get(DEV_EXCEPT_COL, "")).strip()
+            
+        has_pending_ai = False
+        for _, scan_row in ip_scan_findings.iterrows():
+            s_pasteable = str(scan_row.get(SCAN_PASTEABLE, "")).strip()
+            is_failed = is_active_failure(scan_row.get(SCAN_RESULT_COL, ""))
+            
+            # Check if this exact item is already in the existing exception text block
+            already_present = False
+            if base_exceptions_blob and s_pasteable:
+                already_present = s_pasteable.lower() in base_exceptions_blob.lower()
+                
+            if is_failed and not already_present:
+                has_pending_ai = True
+                break
+                
+        ip_needs_ai_map[clean_ip_target] = "TRUE" if has_pending_ai else "FALSE"
+
+    # --------------------------------------------------------------------------
+    # SHEET 1 Generation: Master Tracker Evaluation and Asset Summary
+    # --------------------------------------------------------------------------
+    print("[*] Compiling Sheet 1 (Master Tracker Evaluation and Asset Summary)...")
+    sheet1_rows = []
+    
+    for ip in all_unique_ips:
         clean_ip_target = str(ip).strip().lower()
         
         # Filter raw pool data strictly using the sanitized target string
@@ -305,14 +339,13 @@ def merge_deviation_sheets():
         # Calculate asset rollup compliance properties
         total_open_failures = len(ip_failures)
 
-        # FIX: Ensure it leaves the field blank if there are absolutely no scan findings for this asset
+        # Ensure it leaves the field blank if there are absolutely no scan findings for this asset
         if ip_scan_findings.empty:
             failed_stig_ids = ""
         elif SCAN_STIG_COL in ip_failures.columns:
             failed_stig_ids = clean_join_list(ip_failures[SCAN_STIG_COL].unique(), separator=", ")
         else:
             failed_stig_ids = "Column Missing"
-        
         
         source_sheets = clean_join_list(ip_scan_findings['source sheet'].unique(), separator=", ")
         
@@ -343,7 +376,7 @@ def merge_deviation_sheets():
             orig_mit = ""
             orig_comp = ""
 
-        # Smart Append Logic: Extract unique Pasteable text blocks and check if they are already in the base string
+        # Smart Append Logic: Extract unique Pasteable text blocks and sort them alphabetically
         unique_scan_pasteables = sorted(list(ip_scan_findings[SCAN_PASTEABLE].dropna().unique()))
         appended_exceptions = base_exceptions.strip()
         
@@ -355,7 +388,7 @@ def merge_deviation_sheets():
                 else:
                     appended_exceptions = paste_str
 
-        # Append row object to Sheet 1 dataset array matching instructions
+        # Append row object to Sheet 1 dataset array with new AI review columns at the end
         sheet1_rows.append({
             "IP Address": orig_ip,
             "Hostname": orig_host,
@@ -368,7 +401,18 @@ def merge_deviation_sheets():
             "Benchmark Exceptions List": appended_exceptions,
             "Justifications for Exemptions": orig_just,
             "Mitigating Controls": orig_mit,
-            "Compensating Controls": orig_comp
+            "Compensating Controls": orig_comp,
+            # NEW AI ASSISTED WORKFLOW HELPER COLUMNS
+            "New Exceptions Pending AI Draft": ip_needs_ai_map.get(clean_ip_target, "FALSE"),
+            "AI Draft Justification Addendum": "",
+            "AI Draft Mitigating Controls Addendum": "",
+            "AI Source References Used": "",
+            "AI Assumptions / Gaps": "",
+            "AI Confidence": "",
+            "Reviewer Status": "Not Started",
+            "Reviewer Notes": "",
+            "Ready to Append?": "FALSE",
+            "Append Completed?": "FALSE"
         })
         
     sheet1_df = pd.DataFrame(sheet1_rows)
@@ -568,8 +612,14 @@ def merge_deviation_sheets():
             # FIX: Apply Excel Data Range Auto-Filters dynamically across all worksheets
             worksheet.auto_filter.ref = f"A1:{get_column_letter(worksheet.max_column)}{worksheet.max_row}"
             
-            # Form long text wrap rules lists arrays matching criteria
-            long_wrap_cols = ["FINDING", "Short Desc", "Plugin Name", "Pasteable", "Compliance Reference", "Notes", "Benchmark Exceptions List"]
+            # FIX: Included the new long-form AI columns to trigger auto-wrapping properties
+            long_wrap_cols = [
+                "FINDING", "Short Desc", "Plugin Name", "Pasteable", "Compliance Reference", "Notes", 
+                "Benchmark Exceptions List", "AI Draft Justification Addendum", "Justifications for Exemptions",
+                "Mitigating Controls", "Compensating Controls",
+                "AI Draft Mitigating Controls Addendum", "AI Source References Used", 
+                "AI Assumptions / Gaps", "Reviewer Notes"
+            ]
 
             # Iterate through columns using safe index logic
             for col_idx in range(1, worksheet.max_column + 1):
