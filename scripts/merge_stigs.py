@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 import pandas as pd
+import hashlib
 
 # Import Tkinter for Graphical File Dialog Windows
 import tkinter as tk
@@ -76,6 +77,19 @@ def find_hostname_column(columns) -> str:
         if variant in normalized_cols:
             return normalized_cols[variant]
     return ""
+
+def generate_exception_id(ip, plugin_id, stig, finding, pasteable) -> str:
+    """Generates a stable, deterministic MD5 hash string for an exception signature."""
+    signature = f"{str(ip).strip().lower()}||{str(plugin_id).strip().lower()}||{str(stig).strip().lower()}||{str(finding).strip().lower()}||{str(pasteable).strip().lower()}"
+    return hashlib.md5(signature.encode('utf-8')).hexdigest()
+
+def is_already_in_exceptions(pasteable_val, base_exceptions_text) -> bool:
+    """Checks if a pasteable entry text block already exists in the exceptions string case-insensitively."""
+    if pd.isna(base_exceptions_text) or str(base_exceptions_text).strip() == "":
+        return False
+    if pd.isna(pasteable_val) or str(pasteable_val).strip() == "":
+        return False
+    return str(pasteable_val).strip().lower() in str(base_exceptions_text).strip().lower()
 
 def load_from_google_sheets(target_input: str) -> dict[str, pd.DataFrame]:
     """Authenticates and pulls sheets from Google Drive environment, returning a mapping of sheet names to dataframes."""
@@ -429,6 +443,89 @@ def merge_deviation_sheets():
     sheet4_df = pd.DataFrame(sheet4_rows)
 
     # --------------------------------------------------------------------------
+    # SHEET 5 Generation: Exception Ledger (Grain: Unique asset/finding combination)
+    # --------------------------------------------------------------------------
+    print("[*] Compiling New Sheet (Exception Ledger)...")
+    ledger_dict = {}
+    current_run_date = datetime.now().strftime("%Y-%m-%d")
+    
+    for _, scan_row in raw_scan_pool_df.iterrows():
+        # Extrapolate find grain inputs
+        s_ip = normalize_ip(scan_row.get(SCAN_HOST_COL, ""))
+        s_plugin = str(scan_row.get(SCAN_PLUGIN_COL, "")).strip()
+        s_stig = str(scan_row.get(SCAN_STIG_COL, "")).strip()
+        s_finding = str(scan_row.get(SCAN_SHORT_DESC, "")).strip() if SCAN_SHORT_DESC in scan_row else "" # Adjusting finding string mapping safely
+        # If your data uses another column specifically named "finding", use scan_row.get('finding', '')
+        if 'finding' in scan_row:
+            s_finding = str(scan_row.get('finding', '')).strip()
+            
+        s_pasteable = str(scan_row.get(SCAN_PASTEABLE, "")).strip()
+        
+        if not s_ip:
+            continue
+            
+        # Compute stable tracking key
+        exception_id = generate_exception_id(s_ip, s_plugin, s_stig, s_finding, s_pasteable)
+        
+        # Determine host name lookup from Deviation Master
+        matching_master = master_df[master_df['norm_ip'] == s_ip]
+        s_hostname = ""
+        base_exceptions_blob = ""
+        if not matching_master.empty:
+            s_hostname = str(matching_master.iloc[0].get(DEV_HOST_COL, "")).strip()
+            base_exceptions_blob = str(matching_master.iloc[0].get(DEV_EXCEPT_COL, "")).strip()
+            
+        source_sheet_name = str(scan_row.get('source sheet', 'Unknown')).strip()
+        
+        if exception_id in ledger_dict:
+            # Combine source sheet lists if finding is found duplicated across inputs
+            existing_sheets = [x.strip() for x in ledger_dict[exception_id]['Source Sheet'].split(",")]
+            if source_sheet_name not in existing_sheets:
+                ledger_dict[exception_id]['Source Sheet'] += f", {source_sheet_name}"
+            continue
+            
+        # Context calculations
+        is_failed = is_active_failure(scan_row.get(SCAN_RESULT_COL, ""))
+        status_str = "Active" if is_failed else "Inactive"
+        
+        already_present = is_already_in_exceptions(s_pasteable, base_exceptions_blob)
+        already_present_str = "TRUE" if already_present else "FALSE"
+        
+        needs_ai = "TRUE" if (status_str == "Active" and already_present_str == "FALSE") else "FALSE"
+        
+        ledger_dict[exception_id] = {
+            "Exception_ID": exception_id,
+            "IP Address": scan_row.get(SCAN_HOST_COL, s_ip),
+            "Host Name": s_hostname,
+            "Source Sheet": source_sheet_name,
+            "Plugin ID": scan_row.get(SCAN_PLUGIN_COL, ""),
+            "STIG": scan_row.get(SCAN_STIG_COL, ""),
+            "FINDING": s_finding if s_finding else "N/A",
+            "CAT": scan_row.get('cat', ""),
+            "Severity": scan_row.get('severity', ""),
+            "Result": scan_row.get(SCAN_RESULT_COL, ""),
+            "Short Desc": scan_row.get(SCAN_SHORT_DESC, ""),
+            "Plugin Name": scan_row.get(SCAN_PLUGIN_NAME, ""),
+            "Pasteable": s_pasteable,
+            "Compliance Reference": scan_row.get('compliance reference', ""),
+            "First Seen Date": current_run_date,
+            "Last Seen Date": current_run_date,
+            "Exception Status": status_str,
+            "Already In Benchmark Exceptions List?": already_present_str,
+            "Needs AI Draft?": needs_ai,
+            "AI Packet File": "",
+            "AI Response File": "",
+            "AI Draft Imported?": "FALSE",
+            "Reviewer Status": "Not Started",
+            "Approved to Append?": "FALSE",
+            "Appended to Master?": "FALSE",
+            "Append Date": "",
+            "Notes": ""
+        }
+        
+    ledger_df = pd.DataFrame(list(ledger_dict.values()))
+
+    # --------------------------------------------------------------------------
     # STEP 6: Prompt for Destination & Apply Workbook Layout Formatting
     # --------------------------------------------------------------------------
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -455,6 +552,8 @@ def merge_deviation_sheets():
         raw_scan_pool_df.drop(columns=['norm_ip'], errors='ignore').to_excel(writer, sheet_name="Raw Scan Data Pool", index=False)
         sheet3_df.to_excel(writer, sheet_name="STIG ID Summary", index=False)
         sheet4_df.to_excel(writer, sheet_name="Plugin ID Summary", index=False)
+        # FIX: Appending Exception Ledger worksheet data frames safely
+        ledger_df.to_excel(writer, sheet_name="Exception Ledger", index=False)
         
         # Format the spreadsheet cells cleanly
         for sheet_name, worksheet in writer.sheets.items():
@@ -465,15 +564,27 @@ def merge_deviation_sheets():
                 
             # Freeze the top header row on the current worksheet
             worksheet.freeze_panes = "A2"
+
+            # FIX: Apply Excel Data Range Auto-Filters dynamically across all worksheets
+            worksheet.auto_filter.ref = f"A1:{get_column_letter(worksheet.max_column)}{worksheet.max_row}"
             
+            # Form long text wrap rules lists arrays matching criteria
+            long_wrap_cols = ["FINDING", "Short Desc", "Plugin Name", "Pasteable", "Compliance Reference", "Notes", "Benchmark Exceptions List"]
+
             # Iterate through columns using safe index logic
             for col_idx in range(1, worksheet.max_column + 1):
                 max_len = 0
                 col_letter = get_column_letter(col_idx)
+                header_value = str(worksheet.cell(row=1, column=col_idx).value).strip()
                 
                 for row_idx in range(1, worksheet.max_row + 1):
                     cell = worksheet.cell(row=row_idx, column=col_idx)
-                    cell.alignment = Alignment(wrap_text=True, vertical="top", horizontal="left")
+
+                    # Force cell alignments layout
+                    if header_value in long_wrap_cols:
+                        cell.alignment = Alignment(wrap_text=True, vertical="top", horizontal="left")
+                    else:
+                        cell.alignment = Alignment(wrap_text=False, vertical="top", horizontal="left")
                     
                     if cell.value is not None:
                         lines = str(cell.value).split('\n')
@@ -482,7 +593,10 @@ def merge_deviation_sheets():
                                 max_len = len(line)
                                 
                 calculated_width = max_len + 3
-                if calculated_width > 90:
+                # Let wrapped long description details columns breathe with wide layout spaces
+                if header_value in long_wrap_cols and calculated_width > 45:
+                    worksheet.column_dimensions[col_letter].width = 45
+                elif calculated_width > 90:
                     worksheet.column_dimensions[col_letter].width = 90
                 else:
                     worksheet.column_dimensions[col_letter].width = max(calculated_width, 11)
