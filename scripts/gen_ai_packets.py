@@ -239,7 +239,20 @@ def main():
     opt_overwrite = getattr(dialog_form, 'overwrite', False)
     opt_dry_run = getattr(dialog_form, 'dry_run', False)
     opt_limit = getattr(dialog_form, 'limit', None)
-    out_dir = Path("ai_packets") # standard local relative directory structure
+
+    # FIX: Prompt user to dynamically select where the ai_packets folder should be created, instead of hardcoding it to the current working directory.
+    print("[*] Launching Parent Directory Selector for AI Packets Output...")
+    parent_dir_selected = filedialog.askdirectory(
+        title="Select Parent Location Where 'ai_packets' Directory Should Be Created"
+    )
+    
+    if not parent_dir_selected:
+        print("[-] Execution canceled: No output destination directory selected.")
+        sys.exit(0)
+        
+    # Append the custom folder name to their selected parent directory path string
+    out_dir = Path(parent_dir_selected) / "ai_packets"
+    print(f"[+] Output Folder Destination set to: {out_dir}")
     
     print(f"[*] Parsing workbook tabs from file platform engine...")
     try:
