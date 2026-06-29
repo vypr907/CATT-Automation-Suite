@@ -145,6 +145,18 @@ def build_packet_markdown(asset_record, exception_records) -> str:
     md.append("- If there is not enough evidence to draft defensible language, explicitly declare what information is missing.")
     md.append("- Return your answer as valid JSON using the required response schema at the bottom of this packet.")
     
+    md.append("## Required Reference Document Review")
+    md.append("Before drafting the response, consult the Gem’s uploaded/reference documents:")
+    md.append("- FISMA SSP")
+    md.append("- FIPS 200")
+    md.append("- FIPS-200 Exceptions Matrix")
+    md.append("- Original DISA STIG Deviation document")
+    md.append("Use the SSP as the primary source for system-specific implementation details.")
+    md.append("Use the original DISA STIG Deviation document for language style, precedent, and consistency with existing deviation wording.")
+    md.append("Use the FIPS-200 Exceptions Matrix for exception mapping and framing.")
+    md.append("Use FIPS 200 only as high-level minimum security requirement context, not as proof of a system-specific mitigation.")
+    md.append("If you cannot find supporting evidence in the reference documents, do not invent it. List the gap in `assumptions_or_gaps`.")
+    
     md.append("\n## Asset Context")
     md.append(f"- **IP Address:** {ip}")
     md.append(f"- **Hostname:** {host}")
@@ -391,8 +403,6 @@ def main():
             # Handle other unforeseen system I/O error states
             messagebox.showerror("Unexpected Storage Error", f"Could not write tracking state updates back to workbook:\n{e}")
             sys.exit(1)
-        
-    root.destroy()
         
     root.destroy()
 
