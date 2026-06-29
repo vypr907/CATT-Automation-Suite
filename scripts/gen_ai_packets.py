@@ -364,12 +364,35 @@ def main():
             ledger_sheet.cell(row=row_idx, column=packet_col_idx, value=updated_records_map[cell_id_val])
             updated_cells += 1
             
-    try:
-        workbook.save(wb_path)
-        messagebox.showinfo("Success", f"Processing Complete!\n\n- Packets Generated: {generated_count}\n- Folder Path: ./ai_packets/\n- Ledger Records Linked: {updated_cells}")
-    except Exception as e:
-        messagebox.showerror("Storage Locked Error", f"Could not save updated Excel workbook states. Close file if open:\n{e}")
-        sys.exit(1)
+    # FIX: Implemented a dynamic Retry Loop to allow closing an open spreadsheet in Excel without losing progress
+    while True:
+        try:
+            workbook.save(wb_path)
+            messagebox.showinfo(
+                "Success", 
+                f"Processing Complete!\n\n"
+                f"- Packets Generated: {generated_count}\n"
+                f"- Folder Path: {out_dir.name}/\n"
+                f"- Ledger Records Linked: {updated_cells}"
+            )
+            break # Exit the loop immediately upon successful save operation
+        except PermissionError:
+            # Explicitly catch file lock access exceptions
+            user_choice = messagebox.askretrycancel(
+                "Workbook File Locked",
+                f"Critical Storage Failure: The script cannot save to:\n'{wb_path.name}'\n\n"
+                f"Please CLOSE the workbook if it is open in Excel or another program, then click 'Retry' to continue.\n"
+                f"(Clicking 'Cancel' will terminate the script without updating cell links.)"
+            )
+            if not user_choice:
+                print("[-] Save operation canceled by the user due to file lock.")
+                sys.exit(0)
+        except Exception as e:
+            # Handle other unforeseen system I/O error states
+            messagebox.showerror("Unexpected Storage Error", f"Could not write tracking state updates back to workbook:\n{e}")
+            sys.exit(1)
+        
+    root.destroy()
         
     root.destroy()
 
