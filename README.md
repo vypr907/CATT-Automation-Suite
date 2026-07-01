@@ -1,90 +1,144 @@
-# Nessus Cat II Compliance Extractor
+# CATT Project Hub & Compliance Extractor Toolkit
 
-## Overview
+Welcome to the **CATT Project Hub**. This repository contains a collection of defensive security engineering tools designed to ingest, normalize, evaluate, and automate DISA STIG compliance findings and Category II (Cat II) vulnerabilities from network scans. 
 
-This Python script automates the extraction of Category II (Cat II) failed compliance findings from Tenable Nessus scan results. It uses the Nessus API to export scan data in .nessus (XML) format, parses the XML for relevant failed checks where the reference includes "CAT: II" (or "CAT|II"), and outputs the extracted data to an Excel workbook. Each specified scan is processed separately and written to its own sheet in the workbook.
+The repository houses two primary components used across various projects:
+1. **AI-Assisted STIG Deviation & Justification Pipeline** (Multi-stage automated workflow)
+2. **Nessus Cat II Compliance Extractor** (Standalone API extraction utility)
+
+---
+
+# 🤖 Component 1: AI-Assisted STIG Deviation & Justification Pipeline
+
+This integrated suite of Python tools automatically cross-references raw network scan compliance findings against an authoritative **Master Deviation Tracker**. It accelerates human-in-the-loop validation by isolating active gaps, packaging asset context into structured markdown files, leveraging Generative AI (Google Gemini API or Vertex AI) to draft tailored engineering exceptions, and safely importing them back into an interactive Excel review environment.
+
+### 🏗️ Pipeline Flow Architecture
+
+The workflow is broken into four distinct, logical stages to preserve strict data integrity boundaries and keep humans firmly in control:
+
+```text
+  ┌──────────────────────────────┐
+  │ 1. Raw Scans + Master Tracker│
+  └──────────────┬───────────────┘
+                 │
+                 ▼ [merge_stigs.py]
+  ┌──────────────────────────────┐
+  │ 2. Consolidated Excel Report  │ ◄─── Contains "Master Tracker Evaluation" & "Exception Ledger"
+  └──────────────┬───────────────┘
+                 │
+                 ▼ [generate_ai_packets.py]
+  ┌──────────────────────────────┐
+  │ 3. AI-Ready Markdown Packets  │ ◄─── Grouped by Asset/IP to minimize prompt context fatigue
+  └──────────────┬───────────────┘
+                 │
+                 ▼ [process_ai_packets_with_gemini.py]
+  ┌──────────────────────────────┐
+  │ 4. Structured JSON Responses │ ◄─── Standardized schema containing drafted justifications
+  └──────────────┬───────────────┘
+                 │
+                 ▼ [import_ai_responses.py]
+  ┌──────────────────────────────┐
+  │ 5. Interactive Review Sheets │ ◄─── Populates safe helper columns for Alt-ISSO approval
+  └──────────────────────────────┘
+```
+
+### 🛠️ Pipeline Core Deep-Dive
+
+* **Data Ingestion & Consolidation (`merge_stigs.py`):** Absorbs local workbooks or pulls live assets directly via **Google Sheets API**. It normalizes string layout constraints (stripping case-sensitive column headers or mapping mixed IP/DNS tokens) and generates a multi-tab Excel document containing the **Master Tracker Evaluation** tab (asset-grain), **Raw Scan Data Pool**, and the crucial **Exception Ledger** (one row per asset/finding/exception combination) using stable, deterministic MD5 `Exception_ID` hashes.
+* **Context Aggregation & Packet Formulation (`generate_ai_packets.py`):** Scans the `Exception Ledger` to isolate findings flagged with `Needs AI Draft? = TRUE`. It groups findings by **IP Address/Asset** to minimize prompt context fatigue, pulls legacy justification text blocks, and outputs clean `.md` packets. Features a graphical folder picker and an automatic `PermissionError` catch loop that lets you close open Excel instances and retry seamlessly.
+* **Automated LLM Ingestion Engine (`process_ai_packets_with_gemini.py`):** Automates sending markdown packets down to model instances via the official modern **Google Gen AI SDK** (`google-genai`) or enterprise **Google Cloud Vertex AI Platform**. It layers a rigid system prompt over the assets, binds optional raw markdown documentation guides (`reference_docs/`), enforces low-creativity constraints (`temperature 0.2`), and strictly demands structured JSON outputs matching an absolute validation schema.
+* **Safe AI Response Importer (`import_ai_responses.py`):** Reads valid JSON response payloads out of your local directory, completes cross-tab string validations, and safely maps text additions into designated **AI review/helper columns** at the far end of the `Master Tracker Evaluation` sheet. **Strict Safety Gate:** This utility **NEVER** modifies or writes directly into official, final submission columns.
+
+### 🚀 Pipeline Run Procedures
+
+#### 1. Core Document Consolidation
+Run the primary script. Native system file pickers will ask you to isolate your tracker and raw scans pool:
+```bash
+python merge_stigs.py
+```
+
+#### 2. Packet Generation for AI Ingestion
+Select the spreadsheet generated by Stage 1. Use the graphical popup frame checkboxes to configure dry-runs or toggle testing limit counts (e.g., limit to 3 assets for testing):
+```bash
+python generate_ai_packets.py
+```
+
+#### 3. Running Model Inference Automation
+*Ensure that processing this data on cloud platforms matches your agency's information security standard tier constraints.*
+
+##### Scenario A: Using Google AI Studio Developer Keys
+```bash
+# Set your token (PowerShell format)
+$env:GEMINI_API_KEY="AIzaSyYourSecretStudioDeveloperKey"
+
+python process_ai_packets_with_gemini.py \
+  --packets-dir "ai_packets" \
+  --responses-dir "ai_responses" \
+  --system-prompt "prompts/STIG_justification_engine.md" \
+  --provider "google-ai" \
+  --model "gemini-2.5-pro"
+```
+
+##### Scenario B: Using Enterprise Vertex AI Application Default Credentials
+```bash
+gcloud auth application-default login
+
+python process_ai_packets_with_gemini.py \
+  --packets-dir "ai_packets" \
+  --responses-dir "ai_responses" \
+  --system-prompt "prompts/STIG_justification_engine.md" \
+  --provider "vertex-ai" \
+  --project-id "your-gcp-compliance-project-id" \
+  --location "us-central1" \
+  --reference-docs-dir "reference_docs"
+```
+
+#### 4. Importing AI Drafts for Review
+Run the importer. Graphically check the configuration boxes to create automated, timestamped `.xlsx` architecture backups before running data injections:
+```bash
+python import_ai_responses.py
+```
+
+### 🔒 Security, Compliance & Governance Directives
+1. **Information Isolation:** None of these automation scripts store, log, or print raw system facts, credential profiles, or sensitive compliance packet string blocks to standard system console outputs.
+2. **Strict Human-in-the-Loop Gatekeeping:** AI-generated text additions remain locked inside review tracks. They are **never** auto-merged or mixed into production data structures without explicit reviewer authorization.
+3. **Data Flight Boundaries:** If your local system classification level blocks data flights to commercial endpoints, bypass stage 3 and use **Ollama** or a similar offline local inference proxy layer targeting `http://localhost:11434` to keep all processing completely on-prem.
+
+---
+
+# 🔍 Component 2: Nessus Cat II Compliance Extractor (Legacy / Standalone)
+
+This standalone script (`catt_extract_nessus.py`) automates the extraction of Category II (Cat II) failed compliance findings from Tenable Nessus scan results. It uses the Nessus API to export scan data in `.nessus` (XML) format, parses the XML for relevant failed checks where the reference includes `"CAT: II"` (or `"CAT|II"`), and outputs the extracted data to an Excel workbook. Each specified scan is processed separately and written to its own sheet in the workbook.
 
 The tool is designed for compliance scans (e.g., STIG-based audits on systems like RHEL), focusing on failed items with Cat II severity. It also parses check names to separate STIG IDs from descriptions for better organization.
 
-## Features
-
-- **API Authentication**: Securely logs into the Nessus server using username and password.
-- **Multi-Scan Support**: Processes a list of scan IDs, exporting and parsing each one.
-- **XML Parsing**: Extracts detailed fields from compliance tags, including Host, Plugin ID, STIG ID, Description, Full Check Name, Result, Reference, Actual Value, Policy Value, Audit File, See Also, Solution, and Info.
-
-
-## Overview
-
-CATT Extractor is a Python script designed to automate the extraction of Category II (Cat II) failed compliance findings from Tenable Nessus scans. It connects to a Nessus server via the API, exports scan results in .nessus (XML) format, parses the XML for relevant failed checks, and outputs the data into an Excel workbook. Each scan can be processed individually or in batch, with results placed in separate sheets within a single Excel file.
-
-This tool is particularly useful for security analysts and compliance teams working with STIG-based audits on systems like RHEL, where Cat II findings need to be isolated and reported efficiently.
-
-## Features
-
+### ✨ Features
+- **API Authentication:** Securely logs into the Nessus server using username and password.
+- **XML Parsing:** Extracts detailed fields from compliance tags, including Host, Plugin ID, STIG ID, Description, Full Check Name, Result, Reference, Actual Value, Policy Value, Audit File, See Also, Solution, and Info.
+- **Check Name Splitting:** Automatically separates STIG IDs (e.g., `"RHEL-08-010040"`) from the full check name for better organization.
 - **API Integration**: Authenticates with Nessus and exports scan data programmatically.
 - **Compliance Filtering**: Extracts only FAILED compliance checks tagged as "CAT: II" (or "CAT|II") in the reference information.
 - **Data Parsing**: Handles XML structure to pull key fields such as Host, Plugin ID, STIG ID, Description, Actual Value, Policy Value, and more.
-- **Check Name Splitting**: Automatically separates STIG IDs (e.g., "RHEL-08-010040") from the full check name for better organization.
 - **Multi-Scan Support**: Processes multiple scan IDs, creating one sheet per scan in a consolidated Excel file.
 - **Customizable**: Easily extendable to include additional fields or adjust filters.
 
-## Requirements
-
-- Python 3.6+ (tested on 3.12)
-- Required libraries:
-  - `pandas` (for DataFrame handling and Excel export)
-  - `xml.etree.ElementTree` (built-in for XML parsing)
-  - `urllib.request`, `json`, `time`, `ssl` (built-in)
-- Install dependencies: `pip install pandas xlsxwriter`
-- Access to a Tenable Nessus server (on-prem) with API enabled.
-- Valid Nessus credentials (username and password).
-- Scan IDs from Nessus (found in the web UI or via API).
-
-**Note**: For self-signed certificates, the script includes an optional SSL verification bypass (use cautiously on trusted networks).
-
-## Installation
-
-1. Clone or download the repository:
-   ```
-   git clone https://github.com/your-repo/catt-extractor.git
-   cd catt-extractor
-   ```
-
-2. Install required packages:
-   ```
-   pip install -r requirements.txt
-   ```
-
-   Create a `requirements.txt` if not present:
-   ```
-   pandas
-   xlsxwriter
-   ```
-
-## Usage
-
-1. Configure the script (`catt_extract_nessus.py`):
-   - Update `NESSUS_URL`, `USERNAME`, `PASSWORD`.
+### 🚀 Usage & Configuration
+1. Configure the standalone extraction script (`catt_extract_nessus.py`):
+   - Update `NESSUS_URL`, `USERNAME`, and `PASSWORD`.
    - Set `SCAN_IDS` to a list of integers (e.g., `[123, 456]`).
-
 2. Run the script:
-   ```
+   ```bash
    python catt_extract_nessus.py
    ```
+3. **Output:** Generates `nessus_multi_scan_cat_ii_failed.xlsx` with sheets named `Scan_{ID}` for each processed scan. If no Cat II findings are found for a scan, the sheet is skipped and a message is logged.
 
-3. Output:
-   - Generates `nessus_multi_scan_cat_ii_failed.xlsx` with sheets named `Scan_{ID}` for each processed scan.
-   - If no Cat II findings are found for a scan, the sheet is skipped, and a message is printed.
-
-### Example Configuration Snippet
-
+#### Example Configuration Snippet
 ```python
 NESSUS_URL = 'https://your-nessus-server:8834'
 USERNAME = 'your_username'
 PASSWORD = 'your_password'
 SCAN_IDS = [123, 456, 789]  # List of Nessus scan IDs
 ```
-
 ### Handling Specific Scan Runs
 
 To target a historical run of a scan (not the latest), add `'history_id': your_history_id` to the `export_data` dictionary. Retrieve history IDs via the Nessus API (GET `/scans/{scan_id}/history`).
@@ -98,14 +152,84 @@ To target a historical run of a scan (not the latest), add `'history_id': your_h
 - **Data Enrichment**: Splits check names into STIG ID and description.
 - **Excel Output**: Uses `pd.ExcelWriter` to create multi-sheet workbooks.
 
-## Troubleshooting
+### 🔧 Troubleshooting & Notes
+- **SSL Errors:** If certificate verification fails, enable the SSL bypass in the script or add the Nessus cert to your trusted store.
+- **No Data Found:** Verify scan types (must be compliance scans), CAT formatting in references, or print debug info (e.g., reference texts).
+- **API Limits:** Large scans may require pagination or timeouts; adjust `time.sleep` as needed.
+- **XML Parsing Issues:** Ensure `lxml` is installed for better performance (`pip install lxml`), though it is not strictly required.
 
-- **SSL Errors**: If certificate verification fails, enable the SSL bypass in the script or add the Nessus cert to your trusted store.
-- **No Data Found**: Verify scan types (must be compliance scans), CAT formatting in references, or print debug info (e.g., reference texts).
-- **API Limits**: Large scans may require pagination or timeouts; adjust `time.sleep` as needed.
-- **XML Parsing Issues**: Ensure `lxml` is installed for better performance (`pip install lxml`), though not required.
+---
 
-For detailed error logs, add `try-except` blocks around API calls.
+## 📂 Repository Workspace Topology
+
+```text
+CATT_PROJECT_HUB/
+├── auth/
+|   ├── cac_picker.ps1
+|   └── tsc_api_helper.ps1
+├── inputs/
+├── outputs/
+├── prompts/
+│   └── STIG_justification_engine.md # Local baseline mirror of Gemini Gem instructions
+├── raw_extracted_data/
+├── scripts/
+│   ├── merge_stigs.py                   # Consolidation engine (Local/Google Sheets ingestion)
+│   ├── generate_ai_packets.py            # Context packager (Asset-grouped markdown compiler)
+│   ├── process_ai_packets_with_gemini.py# Inference router (Google AI Studio / Vertex AI connector)
+│   ├── import_ai_responses.py           # Data ingest utility (Safe AI review track mapper)
+|   ├── api_extractor.py
+|   ├── catt_engine.py
+|   ├── csv_exctractor.py
+|   ├── isso_analyzer.py
+|   ├── run_catt.py
+|   └── tsc_auth_client.py
+├── ai_packets/                     # On git ignore list so will never leave local workstation
+│   └── <IPADDRESS>_packet.md       # Target outputs generated by stage 2
+├── ai_responses/                   # On git ignore list so will never leave local workstation
+│   ├── <IPADDRESS>_response.json   # Structural outputs captured by stage 3
+│   └── errors/                      # Quarantine silo folder for invalid payloads
+└── README.md                        # Combined documentation file (This file)
+```
+
+## 📦 Global Dependencies / Requirements & Installation
+
+This repository runs on **Python 3.10+**. Clone the workspace and install the required libraries based on which tools you intend to use:
+
+### Installation
+
+1. Clone or download the repository:
+```bash
+git clone https://github.com/your-username/CATT_PROJECT_HUB.git
+cd CATT_PROJECT_HUB
+```
+
+### Requirements
+
+- Python 3.6+ (tested on 3.12)
+- Required libraries: (use this list to create `requirements.txt` if not present)
+    - `pandas` (for DataFrame handling and Excel export)
+    - `openpyxl` (for writing to Excel)
+    - `xlsxwriter` (for writing/formatting Excel)
+    - `urllib.request`, `json`, `time`, `ssl` (built-in)
+    - google-genai
+    - google-cloud-aiplatform
+    - gspread
+    - oauth2client
+- Install required packages:
+```bash
+# Manually install all dependencies:
+pip install pandas openpyxl xlsxwriter google-genai google-cloud-aiplatform gspread oauth2client
+
+# Or utilize a 'requirements.txt'
+pip install -r requirements.txt
+```
+- Access to a Tenable Nessus server (on-prem) with API enabled.
+- Valid Nessus credentials (username and password)
+- Scan IDs from Nessus (found in the web UI or via API)
+
+**Note**: For self-signed certificates, the script includes an optional SSL verification bypass (use cautiously on trusted networks).
+
+---
 
 ## Contributing
 
