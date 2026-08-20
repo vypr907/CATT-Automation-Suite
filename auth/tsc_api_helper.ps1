@@ -8,7 +8,8 @@ param(
     [hashtable]$Headers,
     [switch]$IgnoreSslErrors,
     [string]$QueryJson,
-    [string]$HeadersJson
+    [string]$HeadersJson,
+    [string]$OutputFile
 )
 
 # Build URL
@@ -56,6 +57,12 @@ public class TrustAllCertsPolicy : ICertificatePolicy {
 }
 
 try {
+    if ($OutputFile) {
+        $irParams['OutFile'] = $OutputFile
+        Invoke-WebRequest @irParams | Out-Null
+        exit 0
+    }
+
     $resp = Invoke-RestMethod @irParams
     $json = $resp | ConvertTo-Json -Depth 6
     if (-not $json) { $json = "{}" }

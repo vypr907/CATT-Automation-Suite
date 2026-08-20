@@ -221,6 +221,34 @@ class TSCWindowsCAC:
         """Get a single scan result by ID."""
         return self._call(f"/rest/scanResult/{result_id}", "GET")
 
+    def download_scan_result(
+        self,
+        result_id: int,
+        output_path: str,
+        download_path: str = "/rest/scanResult/{id}/download",
+        format: str = "nessus",
+    ) -> None:
+        """Download a TSC scan result through the CAC-authenticated PowerShell bridge."""
+        path = download_path.format(id=result_id)
+        args = [
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", self.api_script,
+            "-BaseUrl", self.base_url,
+            "-Path", path,
+            "-Method", "GET",
+            "-Thumbprint", self.thumbprint,
+            "-OutputFile", os.fspath(output_path),
+        ]
+        if format:
+            args += ["-QueryJson", json.dumps({"format": format})]
+
+        proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"TSC scan result download failed: {proc.stderr.strip()}")
+
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            raise RuntimeError(f"TSC returned an empty scan result for ID {result_id}")
+
     def start_vuln_export(self, query_id: int, format: str = "csv") -> Any:
         """Start a vulnerability export job (adjust endpoint as needed)."""
         body = {"query_id": query_id, "format": format}
@@ -229,11 +257,7 @@ class TSCWindowsCAC:
 # ---------------- Example usage ----------------
 if __name__ == "__main__":
     BASE_URL = "https://sccv03.csp.noaa.gov"
-    PICKER_SCRIPT = r"G:\My Drive\CATT_EXTRACTOR\tsc_cac_native.ps1"  # adjust path
-    API_SCRIPT = r"G:\My Drive\CATT_EXTRACTOR\tsc_cac_api.ps1"  # adjust path
-    CA_BUNDLE = None  # optional PEM bundle if needed
-
-    tsc = TSCWindowsCAC(BASE_URL, PICKER_SCRIPT, API_SCRIPT, force_repick=True)
+    tsc = TSCWindowsCAC(BASE_URL, force_repick=True)
 
     print("== /rest/system ==")
     print(json.dumps(tsc.system(), indent=2))

@@ -106,6 +106,35 @@ python import_ai_responses.py
 
 ---
 
+## 🚀 Unified Scan Download and Extraction
+
+Use the unified entry point when the scan source may be either Tenable Security Center (TSC) or a local Nessus export:
+
+```powershell
+python -m scripts.run_catt
+```
+
+The command prompts for `tsc` or `nessus`, then displays a location prompt. **Use Default Locations** stores downloads in `inputs/downloads` and the workbook in `outputs/CATT_Extracted_Data.xlsx`. **Choose Locations Myself** opens a folder picker followed by an Excel save dialog. In TSC mode, set the TSC URL first, then select the scan results to download:
+
+```powershell
+$env:TSC_BASE_URL = "https://your-tenable-sc.example"
+python -m scripts.run_catt --source tsc --output outputs/CATT_TSC.xlsx
+```
+
+TSC mode uses the CAC/PIV certificate picker in `auth/cac_picker.ps1`, downloads selected results into `inputs/downloads`, and sends them through the existing ZIP/XML parser and Excel exporter. If a TSC deployment uses a different download route, override it with `--tsc-download-path` using `{id}` for the scan-result ID.
+
+For local Nessus files or ZIP exports:
+
+```powershell
+python -m scripts.run_catt --source nessus --input inputs/nessus --output outputs/CATT_Nessus.xlsx
+```
+
+To pull directly from a Nessus server, omit `--input` and configure the existing `.env` credentials (`NESSUS_URL` or `NESSUS_OP_URL`, `NESSUS_USERNAME`, and the matching password variable):
+
+```powershell
+python -m scripts.run_catt --source nessus --output outputs/CATT_Nessus.xlsx
+```
+
 # 🔍 Component 2: Nessus Cat II Compliance Extractor (Legacy / Standalone)
 
 This standalone script (`catt_extract_nessus.py`) automates the extraction of Category II (Cat II) failed compliance findings from Tenable Nessus scan results. It uses the Nessus API to export scan data in `.nessus` (XML) format, parses the XML for relevant failed checks where the reference includes `"CAT: II"` (or `"CAT|II"`), and outputs the extracted data to an Excel workbook. Each specified scan is processed separately and written to its own sheet in the workbook.
