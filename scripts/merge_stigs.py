@@ -311,12 +311,10 @@ def merge_deviation_sheets():
         for _, scan_row in ip_scan_findings.iterrows():
             s_pasteable = str(scan_row.get(SCAN_PASTEABLE, "")).strip()
             is_failed = is_active_failure(scan_row.get(SCAN_RESULT_COL, ""))
-            
+
             # Check if this exact item is already in the existing exception text block
-            already_present = False
-            if base_exceptions_blob and s_pasteable:
-                already_present = s_pasteable.lower() in base_exceptions_blob.lower()
-                
+            already_present = is_already_in_exceptions(s_pasteable, base_exceptions_blob)
+
             if is_failed and not already_present:
                 has_pending_ai = True
                 break
@@ -376,17 +374,20 @@ def merge_deviation_sheets():
             orig_mit = ""
             orig_comp = ""
 
-        # Smart Append Logic: Extract unique Pasteable text blocks and sort them alphabetically
+        # Keep Benchmark Exceptions List a pure, unmodified copy of the original tracker text.
+        # New scan-derived findings not already covered by it go into their own column instead
+        # of being appended into the same cell, so reviewers can tell new from already-justified.
+        base_exceptions = base_exceptions.strip()
         unique_scan_pasteables = sorted(list(ip_scan_findings[SCAN_PASTEABLE].dropna().unique()))
-        appended_exceptions = base_exceptions.strip()
-        
+        new_exceptions_block = ""
+
         for paste_item in unique_scan_pasteables:
             paste_str = str(paste_item).strip()
-            if paste_str and paste_str not in appended_exceptions:
-                if appended_exceptions:
-                    appended_exceptions += "\n" + paste_str
+            if paste_str and not is_already_in_exceptions(paste_str, base_exceptions):
+                if new_exceptions_block:
+                    new_exceptions_block += "\n" + paste_str
                 else:
-                    appended_exceptions = paste_str
+                    new_exceptions_block = paste_str
 
         # Append row object to Sheet 1 dataset array with new AI review columns at the end
         sheet1_rows.append({
@@ -398,7 +399,8 @@ def merge_deviation_sheets():
             "Total Open Failures": total_open_failures,
             "Failed STIG IDs": failed_stig_ids if failed_stig_ids else "None",
             "System Classification Source Sheets": source_sheets if source_sheets else "Not Seen in Scans",
-            "Benchmark Exceptions List": appended_exceptions,
+            "Benchmark Exceptions List": base_exceptions,
+            "New Benchmark Exceptions (Unreviewed)": new_exceptions_block,
             "Justifications for Exemptions": orig_just,
             "Mitigating Controls": orig_mit,
             "Compensating Controls": orig_comp,
@@ -614,8 +616,9 @@ def merge_deviation_sheets():
             
             # FIX: Included the new long-form AI columns to trigger auto-wrapping properties
             long_wrap_cols = [
-                "FINDING", "Short Desc", "Plugin Name", "Pasteable", "Compliance Reference", "Notes", 
-                "Benchmark Exceptions List", "AI Draft Justification Addendum", "Justifications for Exemptions",
+                "FINDING", "Short Desc", "Plugin Name", "Pasteable", "Compliance Reference", "Notes",
+                "Benchmark Exceptions List", "New Benchmark Exceptions (Unreviewed)",
+                "AI Draft Justification Addendum", "Justifications for Exemptions",
                 "Mitigating Controls", "Compensating Controls",
                 "AI Draft Mitigating Controls Addendum", "AI Source References Used", 
                 "AI Assumptions / Gaps", "Reviewer Notes"
